@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f766e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Barkod Kontrol">
+  <title>Barkod Kontrol</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-title">
+      <h1>Barkod Kontrol</h1>
+      <div id="fileInfo" class="topbar-sub">Ürün listesi yükleniyor…</div>
+    </div>
+    <button id="btnExportTop" class="icon-btn" aria-label="Excel'i dışa aktar" title="Excel'i dışa aktar">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-4.5-4.5M12 15l4.5-4.5M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+      <span id="dirtyBadge" class="badge" hidden>0</span>
+    </button>
+  </header>
+
+  <main>
+    <!-- ============ TARA ============ -->
+    <section id="tab-scan" class="tab active">
+      <div class="camera-wrap">
+        <div id="reader"></div>
+        <div id="cameraIdle" class="camera-idle">
+          <button id="btnStartCam" class="btn btn-primary btn-lg">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M7 8v8M10 8v8M13 8v8M17 8v8"/></svg>
+            Kamerayı Başlat
+          </button>
+          <p id="camMsg" class="muted small"></p>
+        </div>
+        <div class="camera-tools" id="cameraTools" hidden>
+          <button id="btnTorch" class="cam-btn" aria-label="Fener" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></svg>
+          </button>
+          <button id="btnStopCam" class="cam-btn" aria-label="Kamerayı durdur">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6h12v12H6z"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div id="resultCard" class="result idle" aria-live="polite">
+        <div class="result-icon" id="resultIcon">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M7 8v8M10 8v8M13 8v8M17 8v8"/></svg>
+        </div>
+        <div class="result-body">
+          <div class="result-title" id="resultTitle">Barkodu kameraya gösterin</div>
+          <div class="result-name" id="resultName"></div>
+          <div class="result-meta" id="resultMeta"></div>
+        </div>
+      </div>
+
+      <form id="manualForm" class="manual" autocomplete="off">
+        <input id="manualInput" type="text" inputmode="numeric" enterkeyhint="search" placeholder="Barkodu elle girin" aria-label="Barkod">
+        <button class="btn btn-primary" type="submit">Kontrol</button>
+      </form>
+
+      <div class="stats" id="stats"></div>
+
+      <h2 class="section-title">Son okutulanlar</h2>
+      <ul id="recentList" class="list"></ul>
+    </section>
+
+    <!-- ============ LİSTE ============ -->
+    <section id="tab-list" class="tab">
+      <div class="search-bar sticky">
+        <input id="listSearch" type="search" placeholder="Ürün adı, marka, stok kodu, barkod…" aria-label="Ürün ara" enterkeyhint="search">
+        <div class="chips" id="listFilters">
+          <button class="chip active" data-f="all">Tümü</button>
+          <button class="chip" data-f="unchecked">Kontrol edilmedi</button>
+          <button class="chip" data-f="checked">Kontrol edildi</button>
+          <button class="chip" data-f="newbc">Yeni barkodlu</button>
+          <button class="chip" data-f="nobc">Barkodsuz</button>
+        </div>
+        <div class="muted small" id="listCount"></div>
+      </div>
+      <ul id="productList" class="list"></ul>
+      <button id="listMore" class="btn btn-ghost btn-block" hidden>Daha fazla göster</button>
+    </section>
+
+    <!-- ============ KAYITLAR ============ -->
+    <section id="tab-log" class="tab">
+      <div class="card">
+        <h2 class="card-title">Excel Çıktısı</h2>
+        <p class="muted small">Yeni barkodlar <b>“Yeni Barkod”</b> sütununa, yeni / bulunamayan ürünler <b>“Yeni Ürünler”</b> sayfasına, tüm okutmalar <b>“Tarama Geçmişi”</b> sayfasına yazılır.</p>
+        <div class="row gap">
+          <button id="btnDownload" class="btn btn-primary grow">Excel İndir</button>
+          <button id="btnShare" class="btn btn-secondary grow" hidden>Paylaş</button>
+        </div>
+      </div>
+
+      <div class="chips" id="logFilters">
+        <button class="chip active" data-f="all">Tümü</button>
+        <button class="chip" data-f="newbc">Yeni barkod</button>
+        <button class="chip" data-f="newprod">Yeni ürün / Bulunamadı</button>
+        <button class="chip" data-f="scan">Tarama geçmişi</button>
+      </div>
+      <ul id="logList" class="list"></ul>
+
+      <div class="card">
+        <h2 class="card-title">Ürün Listesi Dosyası</h2>
+        <p class="muted small" id="fileDetail"></p>
+        <div class="row gap wrap">
+          <label class="btn btn-secondary grow">
+            Excel Yükle
+            <input id="fileInput" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" hidden>
+          </label>
+          <button id="btnReset" class="btn btn-danger-ghost grow">Kayıtları Sıfırla</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <nav class="tabbar">
+    <button class="tabbtn active" data-tab="scan">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M7 8v8M10 8v8M13 8v8M17 8v8"/></svg>
+      <span>Tara</span>
+    </button>
+    <button class="tabbtn" data-tab="list">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></svg>
+      <span>Ürünler</span>
+    </button>
+    <button class="tabbtn" data-tab="log">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6Zm0 0v6h6M8 13h8M8 17h5"/></svg>
+      <span>Kayıtlar</span>
+    </button>
+  </nav>
+
+  <!-- ============ EŞLEŞME YOK / ARAMA PANELİ ============ -->
+  <div id="sheet" class="sheet" hidden>
+    <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+      <div class="sheet-head" id="sheetHead">
+        <div>
+          <div class="sheet-kicker" id="sheetKicker">Eşleşme yok</div>
+          <div class="sheet-title mono" id="sheetTitle"></div>
+        </div>
+        <button class="icon-btn" id="sheetClose" aria-label="Kapat">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+
+      <!-- adım 1: isimle arama -->
+      <div class="sheet-body" id="stepSearch">
+        <p class="muted small" id="searchHint">Ürünü adıyla arayın. Bulduğunuz ürüne dokunun, okutulan barkod <b>Yeni Barkod</b> olarak eklenir.</p>
+        <input id="nameSearch" type="search" placeholder="Ürün adı yazın… (ör. ocean d3k2)" enterkeyhint="search" autocomplete="off">
+        <ul id="searchResults" class="list compact"></ul>
+      </div>
+      <div class="sheet-foot" id="footSearch">
+        <button id="btnNotFound" class="btn btn-warn btn-block">Ürün listede yok — Bulunamadı işaretle</button>
+      </div>
+
+      <!-- adım 2: yeni ürün ekle -->
+      <form class="sheet-body" id="stepNew" hidden autocomplete="off">
+        <div class="notice warn" id="notFoundNotice">Ürün <b>bulunamadı</b> olarak işaretlendi. İsterseniz yeni ürün olarak ekleyin.</div>
+        <label class="field">
+          <span>Ürün adı</span>
+          <input id="npName" type="text" placeholder="Ürün adını girin" required autocapitalize="characters">
+        </label>
+        <label class="field">
+          <span>Barkod</span>
+          <input id="npBarcode" type="text" inputmode="numeric" required>
+        </label>
+        <label class="field">
+          <span>Marka <em class="muted">(isteğe bağlı)</em></span>
+          <input id="npBrand" type="text" list="brandList" autocapitalize="words">
+          <datalist id="brandList"></datalist>
+        </label>
+        <label class="field">
+          <span>Not <em class="muted">(isteğe bağlı)</em></span>
+          <input id="npNote" type="text">
+        </label>
+        <div class="sheet-foot inline">
+          <button type="submit" class="btn btn-primary btn-block">Yeni Ürün Olarak Ekle</button>
+          <button type="button" id="btnKeepNotFound" class="btn btn-ghost btn-block">Sadece “Bulunamadı” olarak bırak</button>
+        </div>
+      </form>
+
+      <!-- ürün detayı -->
+      <div class="sheet-body" id="stepDetail" hidden></div>
+    </div>
+  </div>
+
+  <!-- onay penceresi -->
+  <div id="confirm" class="modal" hidden>
+    <div class="modal-box" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle">
+      <h3 id="confirmTitle"></h3>
+      <div id="confirmText" class="modal-text"></div>
+      <div class="row gap">
+        <button id="confirmNo" class="btn btn-ghost grow">İptal</button>
+        <button id="confirmYes" class="btn btn-primary grow">Tamam</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="vendor/xlsx.full.min.js"></script>
+  <script src="vendor/html5-qrcode.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
