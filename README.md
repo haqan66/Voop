@@ -37,6 +37,14 @@ aktarılmamış değişiklik sayısıdır. Yanlış eklenen barkod veya ürün *
 *Ürünler* sekmesinde tüm liste aranabilir; *Kontrol edilmedi / Kontrol edildi / Yeni barkodlu / Barkodsuz* filtreleriyle
 sayım takibi yapılabilir, ürüne dokunarak elle barkod eklenebilir.
 
+## Bilgisayarda (yerel) çalıştırmak
+
+Klasördeki **`index.html`** dosyasına çift tıklayın (Chrome veya Edge önerilir). Sunucu veya kurulum gerekmez;
+ürün listesi `data/urun-listesi.js` içindeki gömülü kopyadan yüklenir. Bilgisayara bağlı / dahili kamera ile okutma yapılabilir,
+USB barkod okuyucu kullanılıyorsa “Barkodu elle girin” kutusuna tıklayıp okutmanız yeterli (okuyucu Enter gönderir).
+
+> Not: Telefondan aynı Wi-Fi üzerinden `http://192.168…` adresiyle açarsanız tarayıcı kamerayı engeller; telefon için aşağıdaki HTTPS yöntemini kullanın.
+
 ## Telefonda açmak
 
 Kamera izni için sayfanın **HTTPS** üzerinden açılması gerekir. En kolay yol GitHub Pages:
@@ -58,5 +66,6 @@ app.css                mobil tasarım (açık / koyu tema)
 app.js                 okuma, eşleştirme, arama, Excel yazma
 sw.js                  çevrimdışı çalışma
 data/urun-listesi.xlsx varsayılan ürün listesi
+data/urun-listesi.js   aynı listenin gömülü kopyası (çift tıklayarak açmak için)
 vendor/                SheetJS (Excel) ve html5-qrcode (barkod okuma) kütüphaneleri
 ```

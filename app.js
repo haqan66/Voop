@@ -1170,6 +1170,21 @@
   // ------------------------------------------------------------------
   // Başlangıç
   // ------------------------------------------------------------------
+  /** Varsayılan ürün listesi: sunucudan, olmazsa (file:// ile açıldığında) gömülü kopyadan. */
+  async function defaultFile() {
+    if (location.protocol !== 'file:') {
+      try {
+        const res = await fetch(DEFAULT_FILE, { cache: 'no-cache' });
+        if (res.ok) return await res.arrayBuffer();
+      } catch (e) { /* gömülü kopyaya geç */ }
+    }
+    if (!window.DEFAULT_XLSX_B64) throw new Error('Varsayılan ürün listesi bulunamadı');
+    const bin = atob(window.DEFAULT_XLSX_B64);
+    const u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    return u8.buffer;
+  }
+
   async function init() {
     bind();
     renderStats();
@@ -1180,9 +1195,7 @@
         state = Object.assign(emptyState(), saved);
         await loadBuffer(buf, state.fileName, { keepState: true });
       } else {
-        const res = await fetch(DEFAULT_FILE, { cache: 'no-cache' });
-        if (!res.ok) throw new Error('Varsayılan ürün listesi bulunamadı (' + res.status + ')');
-        await loadBuffer(await res.arrayBuffer(), 'Barkod-Kontrol.xlsx');
+        await loadBuffer(await defaultFile(), 'Barkod-Kontrol.xlsx');
       }
     } catch (e) {
       console.error(e);

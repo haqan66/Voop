@@ -1,5 +1,5 @@
 // Çevrimdışı çalışma için uygulama dosyalarını önbelleğe alır.
-const CACHE = 'barkod-kontrol-v1';
+const CACHE = 'barkod-kontrol-v2';
 const ASSETS = [
   './',
   'index.html',
@@ -12,6 +12,7 @@ const ASSETS = [
   'icons/icon-192.png',
   'icons/icon-512.png',
   'data/urun-listesi.xlsx',
+  'data/urun-listesi.js',
 ];
 
 self.addEventListener('install', (e) => {
