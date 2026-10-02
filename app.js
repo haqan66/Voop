@@ -1,7 +1,9 @@
-/* Barkod Kontrol — mobil barkod eşleştirme uygulaması
- * Akış: Excel ürün listesini oku → kamerayla barkod okut → listede var mı kontrol et
+/* Barkod Kontrol — barkod eşleştirme uygulaması (telefon + web)
+ * Akış: sabit Excel ürün listesini oku → barkod okut → listede var mı kontrol et
  *   → yoksa ürün adıyla ara → bulunursa barkodu "Yeni Barkod" sütununa ekle
  *   → bulunmazsa "Bulunamadı" işaretle ve yeni ürün olarak kaydet.
+ * Ortak çalışma: her işlem bir "olay"dır. Olaylar Google E-Tablosu (Apps Script)
+ * üzerinden tüm cihazlara dağıtılır; ekran durumu olaylardan hesaplanır.
  */
 (function () {
   'use strict';
@@ -12,6 +14,8 @@
   const COL_NEW = 'Yeni Barkod';
   const COL_STATUS = 'Kontrol Durumu';
   const COL_DATE = 'Kontrol Tarihi';
+  const COL_BY = 'Kontrol Eden';
+  const POLL_MS = 4000; // ortak listeyi yoklama aralığı
   const SAME_CODE_COOLDOWN = 2500; // aynı barkodu tekrar saymamak için (ms)
 
   const S = { // durum etiketleri (Excel'e de bu metinler yazılır)
@@ -20,6 +24,9 @@
     NOTFOUND: 'Bulunamadı',
     NEWPROD: 'Yeni Ürün',
     NOMATCH: 'Eşleşmedi',
+    NEWPROD_EDIT: 'Yeni Ürün Güncellendi',
+    UNDO: 'Barkod Geri Alındı',
+    DELETED: 'Kayıt Silindi',
   };
 
   // ------------------------------------------------------------------
@@ -115,26 +122,135 @@
   // ------------------------------------------------------------------
   // Uygulama durumu
   // ------------------------------------------------------------------
-  let fileBuf = null;          // orijinal Excel dosyası (ArrayBuffer)
+  let fileBuf = null;          // sabit Excel ürün listesi (ArrayBuffer)
   let book = null;             // ayrıştırılmış ürün listesi
-  let state = emptyState();    // kullanıcının yaptığı işlemler
   let index = new Map();       // barkod anahtarı → eşleşmeler
   let baseIndex = new Map();   // temel barkod → eşleşmeler
 
+  // Her işlem bir olaydır: { id, t, by, dev, type, code, ... }
+  //   scan        okutma (res: Eşleşti / Eşleşmedi, rows: eşleşen satırlar)
+  //   newbc       ürüne yeni barkod eklendi (r, code)
+  //   undo_newbc  eklenen yeni barkod geri alındı
+  //   notfound    barkod bulunamadı olarak işaretlendi (pid)
+  //   newprod     yeni ürün eklendi / güncellendi (pid, code, name, brand, note)
+  //   del_newprod yeni ürün / bulunamadı kaydı silindi
+  let events = new Map();      // id → olay (bu cihazın ve ekibin tüm olayları)
+  let outbox = new Set();      // ortak listeye henüz gönderilmemiş olay id'leri
+  let meta = { lastExport: '', epoch: '', cursor: 0 };
+  let state = emptyState();    // olaylardan hesaplanan görünüm
+
   function emptyState() {
     return {
-      v: 1,
-      fileName: '',
-      added: {},       // { satırNo: [barkod, ...] }  bu oturumda eklenen yeni barkodlar
-      checked: {},     // { satırNo: { s: durum, t: tarih } }
-      newProducts: [], // [{ id, barcode, name, brand, note, status, t }]
-      log: [],         // [{ t, code, result, name, ref }]
-      dirty: 0,        // son dışa aktarımdan beri yapılan değişiklik sayısı
+      added: {},       // { satırNo: [barkod, ...] }  eklenen yeni barkodlar
+      checked: {},     // { satırNo: { s: durum, t: tarih, by: kişi } }
+      newProducts: [], // [{ id, barcode, name, brand, note, status, t, by }]
+      log: [],         // [{ t, code, result, name, by }]
+      dirty: 0,        // son dışa aktarımdan beri gelen değişiklik sayısı
     };
   }
 
-  function saveState() { return DB.set('state', state); }
-  function markDirty() { state.dirty++; saveState(); renderDirty(); }
+  function rid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 10); }
+  const DEV_ID = (() => {
+    try {
+      let d = localStorage.getItem('bk-dev');
+      if (!d) { d = rid(); localStorage.setItem('bk-dev', d); }
+      return d;
+    } catch (e) { return rid(); }
+  })();
+  function userName() { try { return localStorage.getItem('bk-user') || ''; } catch (e) { return ''; } }
+
+  /** Olayları zaman sırasıyla uygulayıp ekran durumunu yeniden hesaplar. */
+  function replay() {
+    const st = emptyState();
+    const list = [...events.values()].sort((a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : a.id < b.id ? -1 : 1));
+    const findNp = (pid, code) => (pid && st.newProducts.find((n) => n.id === pid))
+      || (code ? st.newProducts.find((n) => codeKey(n.barcode) === codeKey(code)) : null);
+    for (const ev of list) {
+      const by = ev.by || '';
+      const log = (result, name) => st.log.push({ t: ev.t, code: ev.code || '', result, name: name ?? ev.name ?? '', by });
+      switch (ev.type) {
+        case 'scan':
+          log(ev.res);
+          if (ev.res === S.MATCH) (ev.rows || []).forEach((r) => { st.checked[r] = { s: ev.via === 'new' ? S.NEWBC : S.MATCH, t: ev.t, by }; });
+          break;
+        case 'newbc':
+          st.added[ev.r] = uniq([...(st.added[ev.r] || []), ev.code]);
+          st.checked[ev.r] = { s: S.NEWBC, t: ev.t, by };
+          log(S.NEWBC);
+          break;
+        case 'undo_newbc': {
+          const left = (st.added[ev.r] || []).filter((c) => c !== ev.code);
+          if (left.length) st.added[ev.r] = left;
+          else {
+            delete st.added[ev.r];
+            if (st.checked[ev.r] && st.checked[ev.r].s === S.NEWBC) delete st.checked[ev.r];
+          }
+          log(S.UNDO);
+          break;
+        }
+        case 'notfound':
+          if (!findNp(null, ev.code)) st.newProducts.push({ id: ev.pid || ev.id, barcode: ev.code, name: '', brand: '', note: '', status: S.NOTFOUND, t: ev.t, by });
+          log(S.NOTFOUND, '');
+          break;
+        case 'newprod': {
+          let n = findNp(ev.pid, ev.prev || ev.code);
+          const edit = !!(n && n.status === S.NEWPROD);
+          if (!n) { n = { id: ev.pid || ev.id, t: ev.t }; st.newProducts.push(n); }
+          Object.assign(n, { barcode: ev.code, name: ev.name || '', brand: ev.brand || '', note: ev.note || '', status: S.NEWPROD, by });
+          log(edit ? S.NEWPROD_EDIT : S.NEWPROD);
+          break;
+        }
+        case 'del_newprod': {
+          const n = findNp(ev.pid, ev.code);
+          if (n) st.newProducts = st.newProducts.filter((x) => x !== n);
+          log(S.DELETED);
+          break;
+        }
+        default: break;
+      }
+    }
+    // Ekipten biri aynı barkodu bir ürüne eklediyse "Bulunamadı" kaydı düşer
+    const addedKeys = new Set(Object.values(st.added).flat().map(codeKey));
+    st.newProducts = st.newProducts.filter((n) => !(n.status === S.NOTFOUND && addedKeys.has(codeKey(n.barcode))));
+    st.dirty = meta.lastExport ? list.filter((e) => e.t > meta.lastExport).length : list.length;
+    state = st;
+  }
+
+  function persist() {
+    DB.set('events', [...events.values()]);
+    DB.set('outbox', [...outbox]);
+    DB.set('meta', meta);
+  }
+
+  /** Yeni bir işlemi kaydeder, ekranı günceller ve ortak listeye gönderir. */
+  function commit(partial) {
+    const ev = Object.assign({ id: rid(), t: nowIso(), by: userName(), dev: DEV_ID }, partial);
+    events.set(ev.id, ev);
+    outbox.add(ev.id);
+    persist();
+    afterEvents();
+    Sync.soon();
+    return ev;
+  }
+
+  /** Ekipten gelen olayları birleştirir (aynı olay iki kez sayılmaz). */
+  function merge(list) {
+    let changed = false;
+    for (const ev of list || []) {
+      if (!ev || !ev.id) continue;
+      outbox.delete(ev.id);
+      if (!events.has(ev.id)) { events.set(ev.id, ev); changed = true; }
+    }
+    if (changed) afterEvents();
+    return changed;
+  }
+
+  function afterEvents() {
+    replay();
+    rebuildIndex();
+    renderAfterChange();
+    renderDirty();
+  }
 
   // ------------------------------------------------------------------
   // Excel okuma
@@ -176,6 +292,7 @@
       newbc: idx(COL_NEW),
       status: idx(COL_STATUS),
       date: idx(COL_DATE),
+      by: idx(COL_BY),
     };
 
     const products = [];
@@ -505,20 +622,18 @@
       if (first.kind === 'p') {
         const p = book.byRow.get(first.ref);
         const viaNew = hits.every((h) => h.via === 'new');
-        hits.filter((h) => h.kind === 'p').forEach((h) => { state.checked[h.ref] = { s: viaNew ? S.NEWBC : S.MATCH, t: nowIso() }; });
-        addLog(code, S.MATCH, p.name, first.ref);
+        const rows = hits.filter((h) => h.kind === 'p').map((h) => h.ref);
+        commit({ type: 'scan', code, res: S.MATCH, rows, via: viaNew ? 'new' : 'main', name: p.name, stok: p.code, brand: p.brand });
         const extra = hits.length > 1 ? `<div class="small">⚠ Bu barkod listede ${hits.length} üründe kayıtlı</div>` : '';
         showResult('ok', 'EŞLEŞİYOR ✓', p.name,
           `${esc(code)} · Stok: ${esc(p.code)}${p.brand ? ' · ' + esc(p.brand) : ''}${viaNew ? ' · <b>Yeni Barkod ile</b>' : ''}${extra}`);
         beep('ok');
       } else {
         const n = state.newProducts.find((x) => x.id === first.ref);
-        addLog(code, S.MATCH, n ? n.name : '', 'n:' + first.ref);
+        commit({ type: 'scan', code, res: S.MATCH, rows: [], pid: first.ref, name: n ? n.name : '' });
         showResult('info', 'YENİ ÜRÜN LİSTESİNDE', n ? n.name : '', `${esc(code)} · Daha önce yeni ürün olarak eklendi`);
         beep('info');
       }
-      markDirty();
-      renderAfterChange();
       return;
     }
     // Eşleşme yok → isimle arama paneli
@@ -545,11 +660,6 @@
     $('resultMeta').innerHTML = metaHtml || '';
   }
 
-  function addLog(code, result, name, ref) {
-    state.log.push({ t: nowIso(), code, result, name: name || '', ref: ref ?? null });
-    if (state.log.length > 20000) state.log.splice(0, state.log.length - 20000);
-  }
-
   // ------------------------------------------------------------------
   // Eşleşme yok paneli
   // ------------------------------------------------------------------
@@ -569,9 +679,7 @@
 
   function closeSheet(logNoMatch = true) {
     if (sheetMode === 'nomatch' && logNoMatch && sheetCode) {
-      addLog(sheetCode, S.NOMATCH, '', null);
-      markDirty();
-      renderAfterChange();
+      commit({ type: 'scan', code: sheetCode, res: S.NOMATCH });
     }
     $('sheet').hidden = true;
     document.body.style.overflow = '';
@@ -634,14 +742,8 @@
       `<p><b>${esc(p.name)}</b></p><p>Yeni Barkod: <span class="mono">${esc(code)}</span></p>${existing}`,
       'Ekle').then((ok) => {
       if (!ok) return;
-      state.added[r] = uniq([...(state.added[r] || []), code]);
-      state.checked[r] = { s: S.NEWBC, t: nowIso() };
-      // daha önce "bulunamadı" olarak işaretlendiyse o kaydı kaldır
-      state.newProducts = state.newProducts.filter((n) => !(n.status === S.NOTFOUND && codeKey(n.barcode) === codeKey(code)));
-      addLog(code, S.NEWBC, p.name, r);
-      rebuildIndex();
-      markDirty();
-      renderAfterChange();
+      // (daha önce "bulunamadı" işaretlendiyse o kayıt otomatik düşer)
+      commit({ type: 'newbc', r, code, name: p.name, stok: p.code, brand: p.brand });
       showResult('ok', 'YENİ BARKOD EKLENDİ ✓', p.name, `${esc(code)} → Yeni Barkod sütununa yazıldı`);
       beep('ok');
       toast('Yeni barkod eklendi');
@@ -655,11 +757,9 @@
     const q = $('nameSearch').value.trim();
     let n = state.newProducts.find((x) => codeKey(x.barcode) === codeKey(code));
     if (!n) {
-      n = { id: 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), barcode: code, name: '', brand: '', note: '', status: S.NOTFOUND, t: nowIso() };
-      state.newProducts.push(n);
-      addLog(code, S.NOTFOUND, '', 'n:' + n.id);
-      markDirty();
-      renderAfterChange();
+      commit({ type: 'notfound', code, pid: 'n' + rid() });
+      n = state.newProducts.find((x) => codeKey(x.barcode) === codeKey(code));
+      if (!n) { closeSheet(false); return; }
     }
     showResult('warn', 'BULUNAMADI', '', `${esc(code)} · Yeni ürün olarak ekleyebilirsiniz`);
     openNewProductForm(n, q);
@@ -696,11 +796,7 @@
       return;
     }
     const wasNew = n.status === S.NEWPROD;
-    Object.assign(n, { name, barcode: bc, brand: $('npBrand').value.trim(), note: $('npNote').value.trim(), status: S.NEWPROD, t: n.t || nowIso() });
-    if (!wasNew) addLog(bc, S.NEWPROD, name, 'n:' + n.id);
-    rebuildIndex();
-    markDirty();
-    renderAfterChange();
+    commit({ type: 'newprod', pid: n.id, prev: n.barcode, code: bc, name, brand: $('npBrand').value.trim(), note: $('npNote').value.trim() });
     showResult('info', wasNew ? 'YENİ ÜRÜN GÜNCELLENDİ' : 'YENİ ÜRÜN EKLENDİ', name, `${esc(bc)} · “${SHEET_NEW}” sayfasına yazılacak`);
     if (!wasNew) beep('info');
     toast(wasNew ? 'Yeni ürün güncellendi' : 'Yeni ürün eklendi');
@@ -728,7 +824,7 @@
         <dt>Yeni barkod</dt><dd class="mono">${extra.length ? esc(extra.join(', ')) : '—'}</dd>
         ${p.cat ? `<dt>Kategori</dt><dd>${esc(p.cat)}</dd>` : ''}
         ${p.qty ? `<dt>Miktar</dt><dd>${esc(p.qty)}</dd>` : ''}
-        <dt>Kontrol</dt><dd>${chk ? `<span class="tag ${chk.s === S.MATCH ? 'ok' : 'info'}">${esc(chk.s)}</span> <span class="muted small">${fmtDate(chk.t)}</span>` : (p.fileStatus ? `<span class="tag muted">${esc(p.fileStatus)}</span> <span class="muted small">${esc(p.fileDate)}</span>` : '<span class="tag muted">Kontrol edilmedi</span>')}</dd>
+        <dt>Kontrol</dt><dd>${chk ? `<span class="tag ${chk.s === S.MATCH ? 'ok' : 'info'}">${esc(chk.s)}</span> <span class="muted small">${fmtDate(chk.t)}${chk.by ? ' · ' + esc(chk.by) : ''}</span>` : (p.fileStatus ? `<span class="tag muted">${esc(p.fileStatus)}</span> <span class="muted small">${esc(p.fileDate)}</span>` : '<span class="tag muted">Kontrol edilmedi</span>')}</dd>
       </dl>
       <form id="detailForm" class="manual" autocomplete="off">
         <input id="detailCode" type="text" inputmode="numeric" placeholder="Bu ürüne yeni barkod ekle" aria-label="Yeni barkod">
@@ -753,7 +849,7 @@
   // ------------------------------------------------------------------
   // Onay kutusu ve bildirim
   // ------------------------------------------------------------------
-  function confirmBox(title, html, yesText = 'Tamam', danger = false) {
+  function confirmBox(title, html, yesText = 'Tamam', danger = false, focusId = '') {
     return new Promise((resolve) => {
       $('confirmTitle').textContent = title;
       $('confirmText').innerHTML = html;
@@ -764,7 +860,8 @@
       const done = (v) => { $('confirm').hidden = true; yes.onclick = no.onclick = null; resolve(v); };
       yes.onclick = () => done(true);
       no.onclick = () => done(false);
-      setTimeout(() => yes.focus(), 50);
+      setTimeout(() => (focusId && $(focusId) ? $(focusId) : yes).focus(), 50);
+      if (focusId && $(focusId)) $(focusId).onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); done(true); } };
     });
   }
 
@@ -781,9 +878,8 @@
   // Ekran çizimleri
   // ------------------------------------------------------------------
   function counts() {
-    const scans = state.log.filter((l) => l.t);
     return {
-      match: scans.filter((l) => l.result === S.MATCH).length,
+      match: state.log.filter((l) => l.result === S.MATCH).length,
       newbc: Object.values(state.added).reduce((a, v) => a + v.length, 0),
       notfound: state.newProducts.filter((n) => n.status === S.NOTFOUND).length,
       newprod: state.newProducts.filter((n) => n.status === S.NEWPROD).length,
@@ -800,16 +896,17 @@
       <div class="stat"><b>${c.newprod}</b><span>Yeni ürün</span></div>`;
   }
 
-  const RESULT_CLASS = { [S.MATCH]: 'ok', [S.NEWBC]: 'info', [S.NOTFOUND]: 'warn', [S.NEWPROD]: 'info', [S.NOMATCH]: 'bad' };
+  const RESULT_CLASS = { [S.MATCH]: 'ok', [S.NEWBC]: 'info', [S.NOTFOUND]: 'warn', [S.NEWPROD]: 'info', [S.NEWPROD_EDIT]: 'info', [S.NOMATCH]: 'bad', [S.UNDO]: 'muted', [S.DELETED]: 'muted' };
+  const byTag = (by) => (by && Sync.url ? `<span class="who">${esc(by)}</span>` : '');
 
   function renderRecent() {
-    const items = state.log.filter((l) => l.t).slice(-8).reverse();
+    const items = state.log.slice(-(isWide() ? 12 : 8)).reverse();
     $('recentList').innerHTML = items.length ? items.map((l) => `
       <li class="item" data-code="${esc(l.code)}">
         <span class="dot ${RESULT_CLASS[l.result] || 'none'}"></span>
         <div class="item-main">
           <div class="item-title">${esc(l.name || l.code)}</div>
-          <div class="item-sub"><span class="mono">${esc(l.code)}</span><span>${fmtTime(l.t)}</span></div>
+          <div class="item-sub"><span class="mono">${esc(l.code)}</span><span>${fmtTime(l.t)}</span>${byTag(l.by)}</div>
         </div>
         <span class="tag ${RESULT_CLASS[l.result] || 'muted'}">${esc(l.result)}</span>
       </li>`).join('') : '<li class="empty">Henüz okutma yok. Kamerayı başlatıp barkodu okutun.</li>';
@@ -859,7 +956,7 @@
         <td>${esc(p.brand)}</td>
         <td class="mono">${main.length ? esc(main.join(', ')) : '<span class="tag muted">Yok</span>'}</td>
         <td class="mono">${extra.length ? `<span class="tag info">${esc(extra.join(', '))}</span>` : ''}</td>
-        <td class="c-status">${chk ? `<span class="tag ${cls}">${esc(chk.s)}</span> <span class="muted small">${fmtDate(chk.t)}</span>` : '<span class="muted small">—</span>'}</td>
+        <td class="c-status">${chk ? `<span class="tag ${cls}">${esc(chk.s)}</span> <span class="muted small">${fmtDate(chk.t)}</span> ${byTag(chk.by)}` : '<span class="muted small">—</span>'}</td>
       </tr>`;
     }).join('') : '<tr><td colspan="7" class="empty">Sonuç yok</td></tr>';
     $('listMore').hidden = true;
@@ -926,7 +1023,7 @@
         <li class="item" data-new="${n.id}">
           <span class="dot ${n.status === S.NEWPROD ? 'info' : 'warn'}"></span>
           <div class="item-main"><div class="item-title">${esc(n.name || '(isimsiz)')}</div>
-          <div class="item-sub"><span class="mono">${esc(n.barcode)}</span>${n.brand ? `<span>${esc(n.brand)}</span>` : ''}<span class="tag ${n.status === S.NEWPROD ? 'info' : 'warn'}">${esc(n.status)}</span></div></div>
+          <div class="item-sub"><span class="mono">${esc(n.barcode)}</span>${n.brand ? `<span>${esc(n.brand)}</span>` : ''}<span class="tag ${n.status === S.NEWPROD ? 'info' : 'warn'}">${esc(n.status)}</span>${byTag(n.by)}</div></div>
           <button class="del-btn" data-del-new="${n.id}" aria-label="Sil">${trash}</button>
         </li>`).join('');
       if (logFilter === 'newprod' && !rows.length) html += '<li class="empty">Kayıt yok.</li>';
@@ -939,7 +1036,7 @@
         <li class="item" data-code="${esc(l.code)}">
           <span class="dot ${RESULT_CLASS[l.result] || 'none'}"></span>
           <div class="item-main"><div class="item-title">${esc(l.name || l.code)}</div>
-          <div class="item-sub"><span class="mono">${esc(l.code)}</span><span>${l.t ? fmtDate(l.t) : esc(l.tText || '')}</span></div></div>
+          <div class="item-sub"><span class="mono">${esc(l.code)}</span><span>${fmtDate(l.t)}</span>${byTag(l.by)}</div></div>
           <span class="tag ${RESULT_CLASS[l.result] || 'muted'}">${esc(l.result)}</span>
         </li>`).join('');
       if (!rows.length) html += '<li class="empty">Tarama geçmişi boş.</li>';
@@ -959,7 +1056,7 @@
     const withBc = book.products.filter((p) => p.codes.length).length;
     const c = counts();
     $('fileInfo').textContent = `${book.products.length} ürün · ${c.checked} kontrol edildi`;
-    $('fileDetail').innerHTML = `<b>${esc(state.fileName)}</b><br>Sayfa: ${esc(book.sheetName)} · ${book.products.length} ürün · ${withBc} barkodlu`;
+    $('fileDetail').innerHTML = `Ürün listesi <b>sabit</b>: ${book.products.length} ürün · ${withBc} barkodlu (${esc(book.sheetName)})`;
     $('brandList').innerHTML = book.brands.map((b) => `<option value="${esc(b)}">`).join('');
   }
 
@@ -995,6 +1092,7 @@
     const cNew = ensureCol(book.cols.newbc, COL_NEW);
     const cStat = ensureCol(book.cols.status, COL_STATUS);
     const cDate = ensureCol(book.cols.date, COL_DATE);
+    const cBy = ensureCol(book.cols.by, COL_BY);
 
     for (const p of book.products) {
       const added = state.added[p.r] || [];
@@ -1006,29 +1104,30 @@
       if (chk) {
         ws[XLSX.utils.encode_cell({ r: p.r, c: cStat })] = { t: 's', v: chk.s };
         ws[XLSX.utils.encode_cell({ r: p.r, c: cDate })] = { t: 's', v: fmtDate(chk.t) };
+        if (chk.by) ws[XLSX.utils.encode_cell({ r: p.r, c: cBy })] = { t: 's', v: chk.by };
       }
     }
     range.e.c = Math.max(range.e.c, lastCol);
     ws['!ref'] = XLSX.utils.encode_range(range);
     const cols = ws['!cols'] || [];
-    [cNew, cStat, cDate].forEach((c, i) => { if (!cols[c] || !cols[c].wch) cols[c] = { wch: [18, 20, 17][i] }; });
+    [cNew, cStat, cDate, cBy].forEach((c, i) => { if (!cols[c] || !cols[c].wch) cols[c] = { wch: [18, 20, 17, 16][i] }; });
     ws['!cols'] = cols;
     ws['!autofilter'] = ws['!autofilter'] || { ref: XLSX.utils.encode_range({ s: { r: hr, c: range.s.c }, e: { r: range.e.r, c: range.e.c } }) };
 
     // Yeni Ürünler sayfası
-    const npRows = [['Barkod', 'Ürün Adı', 'Marka', 'Durum', 'Not', 'Tarih']];
-    state.newProducts.forEach((n) => npRows.push([n.barcode, n.name, n.brand, n.status, n.note, n.t ? fmtDate(n.t) : (n.tText || '')]));
+    const npRows = [['Barkod', 'Ürün Adı', 'Marka', 'Durum', 'Not', 'Tarih', 'Ekleyen']];
+    state.newProducts.forEach((n) => npRows.push([n.barcode, n.name, n.brand, n.status, n.note, fmtDate(n.t), n.by || '']));
     const wsNew = XLSX.utils.aoa_to_sheet(npRows);
     for (let i = 1; i < npRows.length; i++) wsNew[XLSX.utils.encode_cell({ r: i, c: 0 })] = codeCell(npRows[i][0]);
-    wsNew['!cols'] = [{ wch: 16 }, { wch: 50 }, { wch: 16 }, { wch: 14 }, { wch: 24 }, { wch: 17 }];
+    wsNew['!cols'] = [{ wch: 16 }, { wch: 50 }, { wch: 16 }, { wch: 14 }, { wch: 24 }, { wch: 17 }, { wch: 16 }];
     putSheet(wb, SHEET_NEW, wsNew);
 
     // Tarama Geçmişi sayfası
-    const lgRows = [['Tarih', 'Okunan Barkod', 'Sonuç', 'Ürün Adı']];
-    state.log.forEach((l) => lgRows.push([l.t ? fmtDate(l.t) : (l.tText || ''), l.code, l.result, l.name]));
+    const lgRows = [['Tarih', 'Okunan Barkod', 'Sonuç', 'Ürün Adı', 'Kişi']];
+    state.log.forEach((l) => lgRows.push([fmtDate(l.t), l.code, l.result, l.name, l.by || '']));
     const wsLog = XLSX.utils.aoa_to_sheet(lgRows);
     for (let i = 1; i < lgRows.length; i++) wsLog[XLSX.utils.encode_cell({ r: i, c: 1 })] = codeCell(lgRows[i][1]);
-    wsLog['!cols'] = [{ wch: 17 }, { wch: 16 }, { wch: 20 }, { wch: 50 }];
+    wsLog['!cols'] = [{ wch: 17 }, { wch: 16 }, { wch: 22 }, { wch: 50 }, { wch: 16 }];
     putSheet(wb, SHEET_LOG, wsLog);
 
     return XLSX.write(wb, { bookType: 'xlsx', type: 'array', compression: true });
@@ -1042,7 +1141,7 @@
   function exportName() {
     const d = new Date();
     const p = (n) => String(n).padStart(2, '0');
-    const base = (state.fileName || 'Barkod-Kontrol').replace(/\.(xlsx|xls)$/i, '').replace(/_kontrol_\d{8}-\d{4}$/, '');
+    const base = 'Barkod-Kontrol';
     return `${base}_kontrol_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.xlsx`;
   }
 
@@ -1052,8 +1151,9 @@
   }
 
   function afterExport() {
+    meta.lastExport = nowIso();
     state.dirty = 0;
-    saveState();
+    persist();
     renderDirty();
   }
 
@@ -1088,55 +1188,229 @@
   }
 
   // ------------------------------------------------------------------
-  // Dosya yükleme
+  // Ürün listesi (sabit) ve sıfırlama
   // ------------------------------------------------------------------
-  async function loadBuffer(buf, fileName, { keepState } = { keepState: false }) {
-    const parsed = parseWorkbook(buf);
+  function loadBook(buf) {
+    book = parseWorkbook(buf);
     fileBuf = buf;
-    book = parsed;
-    if (!keepState) {
-      state = emptyState();
-      state.fileName = fileName;
-      state.newProducts = parsed.newProducts;
-      state.log = parsed.log;
-      await DB.set('file', buf);
-      await saveState();
-    }
-    rebuildIndex();
-    renderAfterChange();
-    renderDirty();
-    if ($('tab-list').classList.contains('active')) renderList();
-  }
-
-  async function onFileChosen(e) {
-    const f = e.target.files && e.target.files[0];
-    e.target.value = '';
-    if (!f) return;
-    if (state.dirty) {
-      const ok = await confirmBox('Yeni dosya yüklensin mi?',
-        `<p>Dışa aktarılmamış <b>${state.dirty}</b> değişiklik var. Yeni dosya yüklenirse bu kayıtlar silinir.</p><p class="small muted">Önce “Excel İndir” ile kaydetmeniz önerilir.</p>`, 'Yükle', true);
-      if (!ok) return;
-    }
-    try {
-      const buf = await f.arrayBuffer();
-      await loadBuffer(buf, f.name);
-      toast(`${book.products.length} ürün yüklendi`);
-    } catch (err) { console.error(err); toast('Dosya okunamadı: ' + err.message); }
   }
 
   async function resetAll() {
+    if (Sync.url) {
+      await confirmBox('Ortak sayım sıfırlanamaz',
+        '<p>Ortak çalışmada kayıtlar ekipteki herkes için tutulur. Yeni bir sayım başlatmak için Google E-Tablosu’ndaki <b>Barkod Kontrol → Yeni sayım başlat</b> menüsünü kullanın; tüm cihazlar otomatik olarak sıfırlanır.</p>', 'Tamam');
+      return;
+    }
     const ok = await confirmBox('Kayıtlar sıfırlansın mı?',
-      '<p>Eklenen yeni barkodlar, yeni ürünler ve tarama geçmişi silinir. Ürün listesi korunur.</p>', 'Sıfırla', true);
+      '<p>Eklenen yeni barkodlar, yeni ürünler ve tarama geçmişi silinir. Ürün listesi değişmez.</p>', 'Sıfırla', true);
     if (!ok) return;
-    const name = state.fileName;
-    state = emptyState();
-    state.fileName = name;
-    await saveState();
-    rebuildIndex();
-    renderAfterChange();
-    renderDirty();
+    events.clear();
+    outbox.clear();
+    meta.lastExport = '';
+    persist();
+    afterEvents();
     showResult('idle', 'Barkodu kameraya gösterin', '', '');
     toast('Kayıtlar sıfırlandı');
+  }
+
+  // ------------------------------------------------------------------
+  // Ortak çalışma (Google E-Tablosu / Apps Script üzerinden eşitleme)
+  // ------------------------------------------------------------------
+  const Sync = {
+    url: '',
+    busy: false,
+    status: 'off', // off | ok | error
+    error: '',
+    lastOk: 0,
+    timer: null,
+    soonTimer: null,
+
+    init() {
+      // Ekip linki: ...#baglanti=<adres>
+      const m = location.hash.match(/(?:^#|&)baglanti=([^&]+)/);
+      if (m) {
+        try { localStorage.setItem('bk-sync', decodeURIComponent(m[1])); } catch (e) {}
+        history.replaceState(null, '', location.pathname + location.search);
+      }
+      try { this.url = localStorage.getItem('bk-sync') || ''; } catch (e) {}
+      document.addEventListener('visibilitychange', () => { if (!document.hidden) this.now(); });
+      window.addEventListener('online', () => this.now());
+      this.loop();
+      this.now();
+    },
+
+    loop() {
+      clearTimeout(this.timer);
+      this.timer = setTimeout(async () => {
+        if (!document.hidden) await this.now();
+        this.loop();
+      }, POLL_MS);
+    },
+
+    soon() {
+      clearTimeout(this.soonTimer);
+      this.soonTimer = setTimeout(() => this.now(), 200);
+    },
+
+    async call(method, body, params) {
+      const u = new URL(this.url);
+      Object.entries(params || {}).forEach(([k, v]) => u.searchParams.set(k, v));
+      u.searchParams.set('_', Date.now());
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), 20000);
+      try {
+        const opts = { signal: ctrl.signal, redirect: 'follow', cache: 'no-store' };
+        if (method === 'POST') Object.assign(opts, { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'text/plain;charset=utf-8' } });
+        const res = await fetch(u, opts);
+        const txt = await res.text();
+        try { return JSON.parse(txt); } catch (e) {
+          throw new Error(res.ok ? 'Geçersiz yanıt — Apps Script erişimi “Herkes” olmalı' : 'Sunucu hatası (' + res.status + ')');
+        }
+      } catch (e) {
+        if (e.name === 'AbortError') throw new Error('Zaman aşımı');
+        if (e instanceof TypeError) throw new Error('İnternet / bağlantı yok');
+        throw e;
+      } finally { clearTimeout(to); }
+    },
+
+    async now() {
+      if (!this.url || this.busy) { renderSync(); return; }
+      this.busy = true;
+      try {
+        // 1) bekleyen olayları gönder
+        const ids = [...outbox].slice(0, 200);
+        if (ids.length) {
+          const evs = ids.map((id) => events.get(id)).filter(Boolean);
+          const j = await this.call('POST', { epoch: meta.epoch, events: evs });
+          if (j.error === 'epoch') await newEpoch(j.epoch);
+          else if (!j.ok) throw new Error(j.error || 'Sunucu hatası');
+          else { ids.forEach((id) => outbox.delete(id)); persist(); }
+        }
+        // 2) ekibin yeni olaylarını al
+        for (let guard = 0; guard < 50; guard++) {
+          const j = await this.call('GET', null, { since: meta.cursor });
+          if (!j.ok) throw new Error(j.error || 'Sunucu hatası');
+          if (meta.epoch && j.epoch !== meta.epoch) { await newEpoch(j.epoch); continue; }
+          meta.epoch = j.epoch;
+          if (j.next < meta.cursor) { meta.cursor = 0; continue; } // tablodan satır silinmiş: baştan oku
+          merge(j.events);
+          meta.cursor = j.next;
+          persist();
+          if (!j.more) break;
+        }
+        this.status = 'ok';
+        this.error = '';
+        this.lastOk = Date.now();
+      } catch (e) {
+        this.status = 'error';
+        this.error = e.message || String(e);
+      } finally {
+        this.busy = false;
+        renderSync();
+      }
+    },
+  };
+
+  /** Google E-Tablosu'nda "Yeni sayım başlat" kullanıldı: bu cihazdaki kayıtlar sıfırlanır. */
+  async function newEpoch(epoch) {
+    const had = events.size > 0;
+    events.clear();
+    outbox.clear();
+    meta = { lastExport: '', epoch, cursor: 0 };
+    persist();
+    afterEvents();
+    if (had) toast('Yeni sayım başlatıldı — kayıtlar sıfırlandı');
+  }
+
+  function teamMembers(sinceMs) {
+    const from = new Date(Date.now() - sinceMs).toISOString();
+    return uniq([...events.values()].filter((e) => e.t >= from && e.by).map((e) => e.by));
+  }
+
+  function renderSync() {
+    const pill = $('syncPill');
+    const pending = outbox.size;
+    let cls = 'off', text = 'Tek cihaz', detail = 'Ortak çalışma kapalı. Kayıtlar yalnızca bu cihazda tutulur.';
+    if (Sync.url) {
+      const active = teamMembers(15 * 60 * 1000);
+      const today = teamMembers(24 * 60 * 60 * 1000);
+      if (Sync.status === 'error') {
+        cls = 'err';
+        text = pending ? `Bağlantı yok · ${pending} bekliyor` : 'Bağlantı yok';
+        detail = `Ortak listeye ulaşılamıyor: ${esc(Sync.error)}. Okutmaya devam edebilirsiniz; ${pending ? `<b>${pending}</b> kayıt` : 'kayıtlar'} bağlantı gelince otomatik gönderilir.`;
+      } else if (Sync.status === 'ok') {
+        cls = pending ? 'wait' : 'ok';
+        text = pending ? `Gönderiliyor · ${pending}` : `Ortak · ${Math.max(1, active.length)} kişi`;
+        detail = `<b>Bağlı.</b> Son eşitleme ${new Date(Sync.lastOk).toLocaleTimeString('tr-TR')}. `
+          + (today.length ? `Bugün okutanlar: ${today.map(esc).join(', ')}.` : 'Henüz okutma yok.');
+      } else {
+        cls = 'wait'; text = 'Bağlanıyor…'; detail = 'Ortak listeye bağlanılıyor…';
+      }
+    }
+    pill.className = 'sync-pill ' + cls;
+    $('syncText').textContent = text;
+    $('syncDetail').innerHTML = detail;
+    $('btnSyncOff').hidden = !Sync.url;
+    $('btnTeamLink').hidden = !Sync.url;
+    $('btnSyncSave').textContent = Sync.url ? 'Kaydet' : 'Bağlan';
+    $('btnReset').hidden = !!Sync.url;
+    if (document.activeElement !== $('syncUrl')) $('syncUrl').value = Sync.url;
+    if (document.activeElement !== $('userName')) $('userName').value = userName();
+  }
+
+  async function askName(force) {
+    if (userName() && !force) return userName();
+    const ok = await confirmBox('Adınız',
+      '<p class="small muted">Okuttuğunuz ürünlerde ve Excel çıktısında bu isim görünür.</p><input id="askNameInput" class="modal-input" type="text" autocomplete="name" placeholder="Örn. Ahmet" maxlength="40">',
+      'Kaydet', false, 'askNameInput');
+    const v = ok ? ($('askNameInput').value || '').trim() : '';
+    if (v) { try { localStorage.setItem('bk-user', v); } catch (e) {} }
+    renderSync();
+    return userName();
+  }
+
+  async function connectSync() {
+    const url = $('syncUrl').value.trim();
+    const name = $('userName').value.trim();
+    if (name) { try { localStorage.setItem('bk-user', name); } catch (e) {} }
+    if (!url) { toast('Bağlantı adresini girin'); return; }
+    if (!/^https:\/\/script\.google(usercontent)?\.com\/.+/.test(url)) {
+      toast('Adres https://script.google.com/macros/s/…/exec biçiminde olmalı');
+      return;
+    }
+    if (url !== Sync.url && outbox.size) {
+      const send = await confirmBox('Bu cihazdaki kayıtlar',
+        `<p>Bu cihazda ortak listeye gönderilmemiş <b>${outbox.size}</b> kayıt var.</p><p>Ortak listeye eklensin mi? “Hayır” derseniz bu kayıtlar silinir.</p>`, 'Evet, ekle');
+      if (!send) { events.clear(); outbox.clear(); afterEvents(); }
+    }
+    try { localStorage.setItem('bk-sync', url); } catch (e) {}
+    if (url !== Sync.url) meta = { lastExport: meta.lastExport, epoch: '', cursor: 0 };
+    Sync.url = url;
+    Sync.status = 'connecting';
+    persist();
+    if (!userName()) await askName();
+    await Sync.now();
+    toast(Sync.status === 'ok' ? 'Ortak listeye bağlandı' : 'Bağlanamadı: ' + Sync.error);
+  }
+
+  async function disconnectSync() {
+    const ok = await confirmBox('Bağlantı kesilsin mi?',
+      '<p>Bu cihaz ortak listeden ayrılır. Mevcut kayıtlar cihazda kalır; ortak listedeki kayıtlar silinmez.</p>', 'Bağlantıyı kes', true);
+    if (!ok) return;
+    try { localStorage.removeItem('bk-sync'); } catch (e) {}
+    Sync.url = '';
+    Sync.status = 'off';
+    renderSync();
+    renderAfterChange();
+  }
+
+  async function shareTeamLink() {
+    const link = `${location.origin}${location.pathname}#baglanti=${encodeURIComponent(Sync.url)}`;
+    try {
+      if (navigator.share && isTouch()) { await navigator.share({ title: 'Barkod Kontrol', text: 'Ortak barkod sayımına katıl:', url: link }); return; }
+    } catch (e) { if (e && e.name === 'AbortError') return; }
+    try { await navigator.clipboard.writeText(link); toast('Ekip linki kopyalandı'); }
+    catch (e) { await confirmBox('Ekip linki', `<p class="small">Bu linki ekip arkadaşlarınıza gönderin:</p><input class="modal-input" readonly value="${esc(link)}" onfocus="this.select()">`, 'Tamam'); }
   }
 
   // ------------------------------------------------------------------
@@ -1230,9 +1504,7 @@
         const [r, code] = undo.dataset.undoBc.split('|');
         const p = book.byRow.get(+r);
         if (!(await confirmBox('Yeni barkod geri alınsın mı?', `<p><b>${esc(p ? p.name : '')}</b></p><p class="mono">${esc(code)}</p>`, 'Geri al', true))) return;
-        state.added[r] = (state.added[r] || []).filter((c) => c !== code);
-        if (!state.added[r].length) { delete state.added[r]; if (state.checked[r] && state.checked[r].s === S.NEWBC) delete state.checked[r]; }
-        rebuildIndex(); markDirty(); renderAfterChange(); renderLog();
+        commit({ type: 'undo_newbc', r: +r, code, name: p ? p.name : '' });
         toast('Geri alındı');
         return;
       }
@@ -1240,8 +1512,7 @@
       if (del) {
         const n = state.newProducts.find((x) => x.id === del.dataset.delNew);
         if (!n || !(await confirmBox('Kayıt silinsin mi?', `<p><b>${esc(n.name || '(isimsiz)')}</b></p><p class="mono">${esc(n.barcode)}</p>`, 'Sil', true))) return;
-        state.newProducts = state.newProducts.filter((x) => x !== n);
-        rebuildIndex(); markDirty(); renderAfterChange(); renderLog();
+        commit({ type: 'del_newprod', pid: n.id, code: n.barcode, name: n.name });
         toast('Silindi');
         return;
       }
@@ -1255,9 +1526,16 @@
     $('btnShare').addEventListener('click', doShare);
     $('btnExportTop').addEventListener('click', () => (isWide() ? doDownload() : switchTab('log')));
     bindKeyboard();
-    bindDrop();
-    $('fileInput').addEventListener('change', onFileChosen);
     $('btnReset').addEventListener('click', resetAll);
+    $('btnSyncSave').addEventListener('click', connectSync);
+    $('btnSyncOff').addEventListener('click', disconnectSync);
+    $('btnTeamLink').addEventListener('click', shareTeamLink);
+    $('syncPill').addEventListener('click', () => switchTab('log'));
+    $('userName').addEventListener('change', (e) => {
+      const v = e.target.value.trim();
+      try { if (v) localStorage.setItem('bk-user', v); } catch (err) {}
+      renderSync();
+    });
 
     try {
       const probe = new File([''], 'a.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
@@ -1288,23 +1566,48 @@
     return u8.buffer;
   }
 
+  /** Önceki sürümün (olay öncesi) kayıtlarını olaylara çevirir. */
+  function migrateOldState(old) {
+    const add = (ev) => { ev.id = rid(); ev.dev = DEV_ID; ev.by = ev.by || ''; events.set(ev.id, ev); outbox.add(ev.id); };
+    (old.log || []).forEach((l) => {
+      if (l.result !== S.MATCH && l.result !== S.NOMATCH) return;
+      const rows = typeof l.ref === 'number' ? [l.ref] : [];
+      add({ type: 'scan', t: l.t || nowIso(), code: l.code, res: l.result, rows, name: l.name || '' });
+    });
+    Object.entries(old.added || {}).forEach(([r, codes]) => codes.forEach((code) => {
+      const chk = (old.checked || {})[r];
+      add({ type: 'newbc', t: (chk && chk.t) || nowIso(), r: +r, code });
+    }));
+    (old.newProducts || []).forEach((n) => {
+      add({ type: 'notfound', t: n.t || nowIso(), code: n.barcode, pid: n.id });
+      if (n.status === S.NEWPROD) add({ type: 'newprod', t: n.t || nowIso(), pid: n.id, code: n.barcode, name: n.name, brand: n.brand, note: n.note });
+    });
+  }
+
   async function init() {
     bind();
-    renderStats();
-    renderRecent();
     try {
-      const [buf, saved] = await Promise.all([DB.get('file'), DB.get('state')]);
-      if (buf && saved) {
-        state = Object.assign(emptyState(), saved);
-        await loadBuffer(buf, state.fileName, { keepState: true });
-      } else {
-        await loadBuffer(await defaultFile(), 'Barkod-Kontrol.xlsx');
-      }
+      const [evs, ob, mt, old] = await Promise.all([DB.get('events'), DB.get('outbox'), DB.get('meta'), DB.get('state')]);
+      (evs || []).forEach((e) => events.set(e.id, e));
+      (ob || []).forEach((id) => outbox.add(id));
+      if (mt) meta = Object.assign(meta, mt);
+      if (!evs && old) { migrateOldState(old); meta.lastExport = ''; persist(); }
+      if (old) { DB.del('state'); DB.del('file'); }
+    } catch (e) { console.warn('Kayıtlar okunamadı', e); }
+    try {
+      loadBook(await defaultFile());
     } catch (e) {
       console.error(e);
-      $('fileInfo').textContent = 'Ürün listesi yüklenmedi';
-      showResult('warn', 'Ürün listesi yok', '', 'Kayıtlar sekmesinden “Excel Yükle” ile ürün listesini seçin.');
+      $('fileInfo').textContent = 'Ürün listesi yüklenemedi';
+      showResult('warn', 'Ürün listesi yüklenemedi', '', esc(e.message));
     }
+    replay();
+    rebuildIndex();
+    renderAfterChange();
+    renderDirty();
+    Sync.init();
+    if (Sync.url && !userName()) askName();
+
     let wantCam = isTouch() ? '1' : '0';
     try { wantCam = localStorage.getItem('bk-cam') ?? wantCam; } catch (e) {}
     if (!isTouch()) $('camMsg').textContent = 'Bilgisayar kamerasını açın veya USB barkod okuyucuyla okutun.';
@@ -1317,7 +1620,7 @@
   }
 
   // ------------------------------------------------------------------
-  // Masaüstü: USB / el barkod okuyucu, kısayollar, sürükle-bırak
+  // Masaüstü: USB / el barkod okuyucu, kısayollar
   // ------------------------------------------------------------------
   function bindKeyboard() {
     // Barkod okuyucular klavye gibi çok hızlı yazar ve sonunda Enter gönderir.
@@ -1357,26 +1660,10 @@
     });
   }
 
-  function bindDrop() {
-    const dz = $('dropZone');
-    let depth = 0;
-    const hasFile = (e) => e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files');
-    window.addEventListener('dragenter', (e) => { if (!hasFile(e)) return; e.preventDefault(); depth++; dz.hidden = false; });
-    window.addEventListener('dragover', (e) => { if (hasFile(e)) e.preventDefault(); });
-    window.addEventListener('dragleave', (e) => { if (!hasFile(e)) return; depth = Math.max(0, depth - 1); if (!depth) dz.hidden = true; });
-    window.addEventListener('drop', (e) => {
-      if (!hasFile(e)) return;
-      e.preventDefault();
-      depth = 0; dz.hidden = true;
-      const f = e.dataTransfer.files[0];
-      if (!f) return;
-      if (!/\.(xlsx|xls)$/i.test(f.name)) { toast('Lütfen bir Excel dosyası (.xlsx) bırakın'); return; }
-      onFileChosen({ target: { files: [f], value: '' } });
-    });
-  }
+
 
   // test/hata ayıklama için
-  window.BarkodKontrol = { handleCode, lookup, searchProducts, get state() { return state; }, get book() { return book; }, buildWorkbook };
+  window.BarkodKontrol = { handleCode, lookup, searchProducts, get state() { return state; }, get book() { return book; }, get events() { return events; }, get outbox() { return outbox; }, Sync, buildWorkbook };
 
   init();
 })();

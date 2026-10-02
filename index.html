@@ -19,6 +19,9 @@
       <h1>Barkod Kontrol</h1>
       <div id="fileInfo" class="topbar-sub">Ürün listesi yükleniyor…</div>
     </div>
+    <button id="syncPill" class="sync-pill off" title="Ortak çalışma durumu">
+      <span class="sync-dot"></span><span id="syncText">Tek cihaz</span>
+    </button>
     <button id="btnExportTop" class="icon-btn" aria-label="Excel'i dışa aktar" title="Excel'i dışa aktar">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-4.5-4.5M12 15l4.5-4.5M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
       <span class="btn-label">Excel İndir</span>
@@ -138,17 +141,24 @@
       <ul id="logList" class="list"></ul>
       </div>
 
-      <div class="card file-card">
-        <h2 class="card-title">Ürün Listesi Dosyası</h2>
-        <p class="muted small" id="fileDetail"></p>
+      <div class="card file-card" id="teamCard">
+        <h2 class="card-title">Ortak Çalışma</h2>
+        <p class="small" id="syncDetail"></p>
+        <label class="field">
+          <span>Adınız <em class="muted">(okutmalarda görünür)</em></span>
+          <input id="userName" type="text" autocomplete="name" maxlength="40" placeholder="Örn. Ahmet">
+        </label>
+        <label class="field">
+          <span>Ortak liste adresi <em class="muted">(Google Apps Script)</em></span>
+          <input id="syncUrl" type="url" inputmode="url" spellcheck="false" autocapitalize="off" placeholder="https://script.google.com/macros/s/…/exec">
+        </label>
         <div class="row gap wrap">
-          <label class="btn btn-secondary grow">
-            Excel Yükle
-            <input id="fileInput" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" hidden>
-          </label>
-          <button id="btnReset" class="btn btn-danger-ghost grow">Kayıtları Sıfırla</button>
+          <button id="btnSyncSave" class="btn btn-primary grow">Bağlan</button>
+          <button id="btnTeamLink" class="btn btn-secondary grow" hidden>Ekip linkini paylaş</button>
         </div>
-        <p class="muted small drop-hint">İpucu: Excel dosyasını sayfanın üzerine sürükleyip bırakarak da yükleyebilirsiniz.</p>
+        <button id="btnSyncOff" class="btn btn-ghost btn-block" hidden>Bağlantıyı kes</button>
+        <p class="muted small" id="fileDetail"></p>
+        <button id="btnReset" class="btn btn-danger-ghost btn-block">Kayıtları Sıfırla</button>
       </div>
       </div>
     </section>
@@ -237,12 +247,6 @@
 
   <div id="toast" class="toast" hidden></div>
 
-  <div id="dropZone" class="dropzone" hidden>
-    <div>
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3m0 0L7.5 7.5M12 3l4.5 4.5M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
-      <p>Excel ürün listesini buraya bırakın</p>
-    </div>
-  </div>
 
   <script src="vendor/xlsx.full.min.js"></script>
   <script src="vendor/html5-qrcode.min.js"></script>
