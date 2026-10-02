@@ -689,6 +689,18 @@
     editingNewId = null;
     $('nameSearch').blur();
     resumeCamera();
+    focusScan();
+  }
+
+  /** Bilgisayarda imleci barkod kutusuna getirir (el barkod okuyucusu ile seri okutma için). */
+  function focusScan() {
+    if (isTouch()) return;
+    setTimeout(() => {
+      if (sheetMode || !$('confirm').hidden || !$('welcome').hidden) return;
+      if (!$('tab-scan').classList.contains('active')) return;
+      const el = $('manualInput');
+      if (document.activeElement !== el) el.focus({ preventScroll: true });
+    }, 0);
   }
 
   function openNoMatch(code) {
@@ -858,7 +870,7 @@
       yes.textContent = yesText;
       yes.className = 'btn grow ' + (danger ? 'btn-warn' : 'btn-primary');
       $('confirm').hidden = false;
-      const done = (v) => { $('confirm').hidden = true; yes.onclick = no.onclick = null; resolve(v); };
+      const done = (v) => { $('confirm').hidden = true; yes.onclick = no.onclick = null; resolve(v); focusScan(); };
       yes.onclick = () => done(true);
       no.onclick = () => done(false);
       setTimeout(() => (focusId && $(focusId) ? $(focusId) : yes).focus(), 50);
@@ -1398,6 +1410,7 @@
     renderSync();
     renderFileInfo();
     toast(`Hoş geldiniz, ${v}`);
+    focusScan();
     if (camState === 'paused') resumeCamera();
     else if (camState === 'off' && wantCamera()) startCamera();
   }
@@ -1416,7 +1429,7 @@
     document.querySelectorAll('.tabbtn').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
     if (name === 'list') renderList();
     if (name === 'log') renderLog();
-    if (name === 'scan') resumeCamera(); else pauseCamera();
+    if (name === 'scan') { resumeCamera(); focusScan(); } else pauseCamera();
     window.scrollTo(0, 0);
   }
 
@@ -1432,15 +1445,33 @@
       const code = cleanCode($('manualInput').value);
       if (!code) return;
       $('manualInput').value = '';
-      $('manualInput').blur();
+      if (isTouch()) $('manualInput').blur(); // telefonda klavyeyi kapat; bilgisayarda imleç kutuda kalır
       lastCode = code; lastAt = Date.now();
       handleCode(code);
+      focusScan();
     });
+    // El okuyucuları barkodun sonuna Tab ekleyebilir: Tab = Kontrol, imleç kutudan çıkmaz
+    $('manualInput').addEventListener('keydown', (e) => {
+      if (e.key !== 'Tab' || e.shiftKey) return;
+      e.preventDefault();
+      if ($('manualInput').value.trim()) $('manualForm').requestSubmit();
+    });
+    // Bilgisayarda barkod kutusu her zaman hazır: boş bir yere tıklanınca imleç geri döner
+    $('manualInput').addEventListener('blur', () => setTimeout(() => {
+      const a = document.activeElement;
+      if (a && a !== document.body && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+      focusScan();
+    }, 0));
 
     // Eşleşme yok paneli
     let st = null;
     $('nameSearch').addEventListener('input', (e) => { clearTimeout(st); st = setTimeout(() => renderSearchResults(e.target.value), 80); });
     $('nameSearch').addEventListener('keydown', (e) => {
+      if (e.key === 'Tab' && !e.shiftKey && /^\d{8,14}$/.test(cleanCode(e.target.value))) {
+        e.preventDefault();
+        e.target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+        return;
+      }
       if (e.key !== 'Enter') return;
       e.preventDefault();
       // Arama kutusuna barkod okutulduysa (USB okuyucu) bunu yeni bir okutma say
@@ -1607,6 +1638,7 @@
     if (!window.isSecureContext) $('camMsg').textContent = 'Kamera için sayfa HTTPS üzerinden açılmalıdır.';
     if (!userName()) showWelcome();          // önce ad, sonra okutma
     else if (wantCamera()) startCamera();
+    focusScan();
 
     if ('serviceWorker' in navigator && location.protocol === 'https:') {
       navigator.serviceWorker.register('sw.js').catch(() => {});
@@ -1631,6 +1663,14 @@
         e.preventDefault();
         const target = $('tab-list').classList.contains('active') ? $('listSearch') : $('manualInput');
         target.focus();
+        return;
+      }
+      // Tara ekranında yazılan / okutulan her karakter doğrudan barkod kutusuna gider
+      if (!isTouch() && !sheetMode && e.key.length === 1 && $('tab-scan').classList.contains('active')) {
+        e.preventDefault();
+        const el = $('manualInput');
+        el.focus({ preventScroll: true });
+        el.value += e.key;
         return;
       }
       const now = performance.now();

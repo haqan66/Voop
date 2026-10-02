@@ -59,7 +59,9 @@ Yanlış eklenen barkod veya ürün *Kayıtlar* sekmesinden çöp kutusu ile ger
 
 Geniş ekranda masaüstü düzeni açılır: sol menü, iki sütunlu tarama ekranı, sıralanabilir ürün tablosu.
 
-- **USB / el barkod okuyucu:** hiçbir kutuya tıklamadan, sayfa açıkken okutmanız yeterli.
+- **USB / el barkod okuyucu:** imleç her zaman barkod kutusunda durur; art arda okutmanız yeterli, hiçbir yere
+  tıklamanız gerekmez. Okuyucu barkod sonuna Enter veya Tab eklese de çalışır. Eşleşme yok penceresi kapanınca
+  imleç kendiliğinden barkod kutusuna döner.
 - **Bilgisayar kamerası:** “Kamerayı Başlat” ile açılır; birden fazla kamera varsa değiştirme düğmesi çıkar.
 - **Kısayollar:** `/` arama kutusuna gider, `Esc` açık pencereyi kapatır.
 
