@@ -2,8 +2,8 @@
  * Akış: sabit Excel ürün listesini oku → barkod okut → listede var mı kontrol et
  *   → yoksa ürün adıyla ara → bulunursa barkodu "Yeni Barkod" sütununa ekle
  *   → bulunmazsa "Bulunamadı" işaretle ve yeni ürün olarak kaydet.
- * Ortak çalışma: her işlem bir "olay"dır. Olaylar Google E-Tablosu (Apps Script)
- * üzerinden tüm cihazlara dağıtılır; ekran durumu olaylardan hesaplanır.
+ * Ortak çalışma: her işlem bir "olay"dır. Olaylar aynı sitedeki api.php üzerinden
+ * tüm cihazlara dağıtılır; ekran durumu olaylardan hesaplanır.
  */
 (function () {
   'use strict';
@@ -136,7 +136,7 @@
   //   del_newprod yeni ürün / bulunamadı kaydı silindi
   let events = new Map();      // id → olay (bu cihazın ve ekibin tüm olayları)
   let outbox = new Set();      // ortak listeye henüz gönderilmemiş olay id'leri
-  let meta = { lastExport: '', epoch: '', cursor: 0, url: '' };
+  let meta = { lastExport: '', epoch: '', cursor: 0 };
   let state = emptyState();    // olaylardan hesaplanan görünüm
 
   function emptyState() {
@@ -339,7 +339,7 @@
 
     const brands = uniq(products.map((p) => p.brand).filter(Boolean)).sort((a, b) => a.localeCompare(b, 'tr'));
     products.forEach((p) => { p.hay = normText([p.name, p.brand, p.code, p.other, p.cat].join(' ')); p.nName = normText(p.name); });
-    return { sheetName, headerRow: h, header, cols, products, rows, byRow: new Map(products.map((p) => [p.r, p])), brands, newProducts, log };
+    return { sheetName, headerRow: h, header, cols, products, byRow: new Map(products.map((p) => [p.r, p])), brands, newProducts, log };
   }
 
   // ------------------------------------------------------------------
@@ -1198,8 +1198,15 @@
 
   async function resetAll() {
     if (Sync.url) {
-      await confirmBox('Ortak sayım sıfırlanamaz',
-        '<p>Ortak çalışmada kayıtlar ekipteki herkes için tutulur. Yeni bir sayım başlatmak için Google E-Tablosu’ndaki <b>Barkod Kontrol → Yeni sayım başlat</b> menüsünü kullanın; tüm cihazlar otomatik olarak sıfırlanır.</p>', 'Tamam');
+      const ok = await confirmBox('Yeni sayım başlatılsın mı?',
+        '<p>Ekipteki <b>herkesin</b> kayıtları temizlenir ve tüm cihazlar sıfırlanır. Mevcut kayıtlar sunucuda <b>veri/arsiv</b> klasörüne yedeklenir.</p><p class="small muted">Önce “Excel İndir” ile çıktı almanız önerilir.</p>', 'Yeni sayım başlat', true);
+      if (!ok) return;
+      try {
+        const j = await Sync.call('POST', { action: 'reset' });
+        if (!j.ok) throw new Error(j.error || 'Sunucu hatası');
+        await newEpoch(j.epoch);
+        toast('Yeni sayım başlatıldı');
+      } catch (e) { toast('Sıfırlanamadı: ' + e.message); }
       return;
     }
     const ok = await confirmBox('Kayıtlar sıfırlansın mı?',
@@ -1215,12 +1222,13 @@
   }
 
   // ------------------------------------------------------------------
-  // Ortak çalışma (Google E-Tablosu / Apps Script üzerinden eşitleme)
+  // Ortak çalışma: aynı sitedeki api.php üzerinden eşitleme
+  // (site api.php olmadan açılırsa — ör. çift tıklayarak — tek cihaz çalışır)
   // ------------------------------------------------------------------
   const Sync = {
     url: '',
-    fixed: false,       // adres config.js'te sabit mi
-    productsSent: false,
+    ready: false,       // sunucu yoklandı mı
+    unsupported: false, // api.php yok / PHP çalışmıyor
     busy: false,
     status: 'off', // off | ok | error
     error: '',
@@ -1228,26 +1236,22 @@
     timer: null,
     soonTimer: null,
 
-    init() {
-      const cfg = String((window.BARKOD_CONFIG && window.BARKOD_CONFIG.ortakListeAdresi) || '').trim();
-      if (cfg) {
-        // Adres sitenin içinde sabit: herkes otomatik olarak ortak sayıma katılır
-        this.url = cfg;
-        this.fixed = true;
-      } else {
-        // Ekip linki: ...#baglanti=<adres>
-        const m = location.hash.match(/(?:^#|&)baglanti=([^&]+)/);
-        if (m) {
-          try { localStorage.setItem('bk-sync', decodeURIComponent(m[1])); } catch (e) {}
-          history.replaceState(null, '', location.pathname + location.search);
-        }
-        try { this.url = localStorage.getItem('bk-sync') || ''; } catch (e) {}
+    async init() {
+      if (!/^https?:$/.test(location.protocol)) { renderSync(); return; }
+      this.url = new URL('api.php', location.href).href;
+      // Önce yokla: sunucuda api.php yoksa (veya PHP çalışmıyorsa) ve daha önce hiç bağlanılmadıysa tek cihaz
+      try { await this.call('GET', null, { since: 0 }); } catch (e) { /* aşağıda karar verilir */ }
+      if (this.unsupported && !meta.epoch) {
+        this.url = '';
+        this.status = 'off';
+        renderSync();
+        return;
       }
-      if (this.url && meta.url !== this.url) { meta.url = this.url; meta.epoch = ''; meta.cursor = 0; persist(); }
+      this.ready = true;
+      await this.now();
       document.addEventListener('visibilitychange', () => { if (!document.hidden) this.now(); });
       window.addEventListener('online', () => this.now());
       this.loop();
-      this.now();
     },
 
     loop() {
@@ -1270,12 +1274,13 @@
       const ctrl = new AbortController();
       const to = setTimeout(() => ctrl.abort(), 20000);
       try {
-        const opts = { signal: ctrl.signal, redirect: 'follow', cache: 'no-store' };
-        if (method === 'POST') Object.assign(opts, { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'text/plain;charset=utf-8' } });
+        const opts = { signal: ctrl.signal, cache: 'no-store' };
+        if (method === 'POST') Object.assign(opts, { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } });
         const res = await fetch(u, opts);
         const txt = await res.text();
         try { return JSON.parse(txt); } catch (e) {
-          throw new Error(res.ok ? 'Geçersiz yanıt — Apps Script erişimi “Herkes” olmalı' : 'Sunucu hatası (' + res.status + ')');
+          this.unsupported = true; // api.php yok ya da PHP çalışmıyor
+          throw new Error(res.status === 404 ? 'api.php bulunamadı' : 'Sunucu PHP yanıtı vermedi (' + res.status + ')');
         }
       } catch (e) {
         if (e.name === 'AbortError') throw new Error('Zaman aşımı');
@@ -1285,10 +1290,10 @@
     },
 
     async now() {
-      if (!this.url || this.busy) { renderSync(); return; }
+      if (!this.url || !this.ready || this.busy) { renderSync(); return; }
       this.busy = true;
       try {
-        // 1) bekleyen olayları gönder
+        // 1) bekleyen kayıtları gönder
         const ids = [...outbox].slice(0, 200);
         if (ids.length) {
           const evs = ids.map((id) => events.get(id)).filter(Boolean);
@@ -1297,23 +1302,17 @@
           else if (!j.ok) throw new Error(j.error || 'Sunucu hatası');
           else { ids.forEach((id) => outbox.delete(id)); persist(); }
         }
-        // 2) ekibin yeni olaylarını al
-        let j = null;
+        // 2) ekibin yeni kayıtlarını al
         for (let guard = 0; guard < 50; guard++) {
-          j = await this.call('GET', null, { since: meta.cursor });
+          const j = await this.call('GET', null, { since: meta.cursor });
           if (!j.ok) throw new Error(j.error || 'Sunucu hatası');
           if (meta.epoch && j.epoch !== meta.epoch) { await newEpoch(j.epoch); continue; }
           meta.epoch = j.epoch;
-          if (j.next < meta.cursor) { meta.cursor = 0; continue; } // tablodan satır silinmiş: baştan oku
+          if (j.next < meta.cursor) { meta.cursor = 0; continue; }
           merge(j.events);
           meta.cursor = j.next;
           persist();
           if (!j.more) break;
-        }
-        // 3) ortak tabloda ürün listesi yoksa sabit listeyi bir kez yükle
-        if (j && j.products === false && book && !this.productsSent) {
-          const r = await this.call('POST', { action: 'products', headerRow: book.headerRow, rows: book.rows });
-          if (r.ok) this.productsSent = true;
         }
         this.status = 'ok';
         this.error = '';
@@ -1328,12 +1327,12 @@
     },
   };
 
-  /** Google E-Tablosu'nda "Yeni sayım başlat" kullanıldı: bu cihazdaki kayıtlar sıfırlanır. */
+  /** Yeni sayım başlatıldı: bu cihazdaki kayıtlar sıfırlanır. */
   async function newEpoch(epoch) {
     const had = events.size > 0;
     events.clear();
     outbox.clear();
-    meta = { lastExport: '', epoch, cursor: 0, url: Sync.url };
+    meta = { lastExport: '', epoch, cursor: 0 };
     persist();
     afterEvents();
     if (had) toast('Yeni sayım başlatıldı — kayıtlar sıfırlandı');
@@ -1347,34 +1346,27 @@
   function renderSync() {
     const pill = $('syncPill');
     const pending = outbox.size;
-    let cls = 'off', text = 'Tek cihaz', detail = 'Ortak çalışma kapalı. Kayıtlar yalnızca bu cihazda tutulur.';
+    let cls = 'off', text = 'Tek cihaz', detail = 'Kayıtlar yalnızca bu cihazda tutulur (sunucuya bağlı değil).';
     if (Sync.url) {
       const active = teamMembers(15 * 60 * 1000);
       const today = teamMembers(24 * 60 * 60 * 1000);
       if (Sync.status === 'error') {
         cls = 'err';
         text = pending ? `Bağlantı yok · ${pending} bekliyor` : 'Bağlantı yok';
-        detail = `Ortak listeye ulaşılamıyor: ${esc(Sync.error)}. Okutmaya devam edebilirsiniz; ${pending ? `<b>${pending}</b> kayıt` : 'kayıtlar'} bağlantı gelince otomatik gönderilir.`;
+        detail = `Sunucuya ulaşılamıyor: ${esc(Sync.error)}. Okutmaya devam edebilirsiniz; ${pending ? `<b>${pending}</b> kayıt` : 'kayıtlar'} bağlantı gelince otomatik gönderilir.`;
       } else if (Sync.status === 'ok') {
         cls = pending ? 'wait' : 'ok';
         text = pending ? `Gönderiliyor · ${pending}` : `Ortak · ${Math.max(1, active.length)} kişi`;
         detail = `<b>Bağlı.</b> Son eşitleme ${new Date(Sync.lastOk).toLocaleTimeString('tr-TR')}. `
           + (today.length ? `Bugün okutanlar: ${today.map(esc).join(', ')}.` : 'Henüz okutma yok.');
       } else {
-        cls = 'wait'; text = 'Bağlanıyor…'; detail = 'Ortak listeye bağlanılıyor…';
+        cls = 'wait'; text = 'Bağlanıyor…'; detail = 'Sunucuya bağlanılıyor…';
       }
     }
     pill.className = 'sync-pill ' + cls;
     $('syncText').textContent = text;
     $('syncDetail').innerHTML = detail;
-    $('syncUrlField').hidden = Sync.fixed;
-    $('btnSyncSave').hidden = Sync.fixed;
-    $('btnSyncOff').hidden = Sync.fixed || !Sync.url;
-    $('btnTeamLink').hidden = !Sync.url;
-    $('btnTeamLink').textContent = Sync.fixed ? 'Site linkini paylaş' : 'Ekip linkini paylaş';
-    $('btnSyncSave').textContent = Sync.url ? 'Kaydet' : 'Bağlan';
-    $('btnReset').hidden = !!Sync.url;
-    if (document.activeElement !== $('syncUrl')) $('syncUrl').value = Sync.url;
+    $('btnReset').textContent = Sync.url ? 'Yeni Sayım Başlat' : 'Kayıtları Sıfırla';
     if (document.activeElement !== $('userName')) $('userName').value = userName();
   }
 
@@ -1414,52 +1406,6 @@
     let want = isTouch() ? '1' : '0';
     try { want = localStorage.getItem('bk-cam') ?? want; } catch (e) {}
     return want === '1' && window.isSecureContext;
-  }
-
-  async function connectSync() {
-    const url = $('syncUrl').value.trim();
-    const name = $('userName').value.trim();
-    if (name) { try { localStorage.setItem('bk-user', name); } catch (e) {} }
-    if (!url) { toast('Bağlantı adresini girin'); return; }
-    if (!/^https:\/\/script\.google(usercontent)?\.com\/.+/.test(url)) {
-      toast('Adres https://script.google.com/macros/s/…/exec biçiminde olmalı');
-      return;
-    }
-    if (url !== Sync.url && outbox.size) {
-      const send = await confirmBox('Bu cihazdaki kayıtlar',
-        `<p>Bu cihazda ortak listeye gönderilmemiş <b>${outbox.size}</b> kayıt var.</p><p>Ortak listeye eklensin mi? “Hayır” derseniz bu kayıtlar silinir.</p>`, 'Evet, ekle');
-      if (!send) { events.clear(); outbox.clear(); afterEvents(); }
-    }
-    try { localStorage.setItem('bk-sync', url); } catch (e) {}
-    if (url !== Sync.url) meta = { lastExport: meta.lastExport, epoch: '', cursor: 0, url };
-    Sync.url = url;
-    Sync.status = 'connecting';
-    persist();
-    await Sync.now();
-    if (!userName()) showWelcome();
-    toast(Sync.status === 'ok' ? 'Ortak listeye bağlandı' : 'Bağlanamadı: ' + Sync.error);
-  }
-
-  async function disconnectSync() {
-    const ok = await confirmBox('Bağlantı kesilsin mi?',
-      '<p>Bu cihaz ortak listeden ayrılır. Mevcut kayıtlar cihazda kalır; ortak listedeki kayıtlar silinmez.</p>', 'Bağlantıyı kes', true);
-    if (!ok) return;
-    try { localStorage.removeItem('bk-sync'); } catch (e) {}
-    Sync.url = '';
-    Sync.status = 'off';
-    renderSync();
-    renderAfterChange();
-  }
-
-  async function shareTeamLink() {
-    const link = Sync.fixed || location.protocol === 'file:'
-      ? `${location.origin}${location.pathname}`
-      : `${location.origin}${location.pathname}#baglanti=${encodeURIComponent(Sync.url)}`;
-    try {
-      if (navigator.share && isTouch()) { await navigator.share({ title: 'Barkod Kontrol', text: 'Ortak barkod sayımına katıl:', url: link }); return; }
-    } catch (e) { if (e && e.name === 'AbortError') return; }
-    try { await navigator.clipboard.writeText(link); toast('Ekip linki kopyalandı'); }
-    catch (e) { await confirmBox('Ekip linki', `<p class="small">Bu linki ekip arkadaşlarınıza gönderin:</p><input class="modal-input" readonly value="${esc(link)}" onfocus="this.select()">`, 'Tamam'); }
   }
 
   // ------------------------------------------------------------------
@@ -1576,10 +1522,7 @@
     $('btnExportTop').addEventListener('click', () => (isWide() ? doDownload() : switchTab('log')));
     bindKeyboard();
     $('btnReset').addEventListener('click', resetAll);
-    $('btnSyncSave').addEventListener('click', connectSync);
     $('welcomeForm').addEventListener('submit', onWelcome);
-    $('btnSyncOff').addEventListener('click', disconnectSync);
-    $('btnTeamLink').addEventListener('click', shareTeamLink);
     $('syncPill').addEventListener('click', () => switchTab('log'));
     $('userName').addEventListener('change', (e) => {
       const v = e.target.value.trim();

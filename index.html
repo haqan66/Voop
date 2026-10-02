@@ -148,15 +148,6 @@
           <span>Adınız <em class="muted">(okutmalarda görünür)</em></span>
           <input id="userName" type="text" autocomplete="name" maxlength="40" placeholder="Örn. Ahmet">
         </label>
-        <label class="field" id="syncUrlField">
-          <span>Ortak liste adresi <em class="muted">(Google Apps Script)</em></span>
-          <input id="syncUrl" type="url" inputmode="url" spellcheck="false" autocapitalize="off" placeholder="https://script.google.com/macros/s/…/exec">
-        </label>
-        <div class="row gap wrap">
-          <button id="btnSyncSave" class="btn btn-primary grow">Bağlan</button>
-          <button id="btnTeamLink" class="btn btn-secondary grow" hidden>Ekip linkini paylaş</button>
-        </div>
-        <button id="btnSyncOff" class="btn btn-ghost btn-block" hidden>Bağlantıyı kes</button>
         <p class="muted small" id="fileDetail"></p>
         <button id="btnReset" class="btn btn-danger-ghost btn-block">Kayıtları Sıfırla</button>
       </div>
@@ -262,7 +253,6 @@
 
   <script src="vendor/xlsx.full.min.js"></script>
   <script src="vendor/html5-qrcode.min.js"></script>
-  <script src="config.js"></script>
   <script src="data/urun-listesi.js"></script>
   <script src="app.js"></script>
 </body>

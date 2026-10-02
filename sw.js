@@ -1,11 +1,10 @@
 // Çevrimdışı çalışma için uygulama dosyalarını önbelleğe alır.
-const CACHE = 'barkod-kontrol-v5';
+const CACHE = 'barkod-kontrol-v6';
 const ASSETS = [
   './',
   'index.html',
   'app.css',
   'app.js',
-  'config.js',
   'manifest.webmanifest',
   'vendor/xlsx.full.min.js',
   'vendor/html5-qrcode.min.js',
@@ -30,7 +29,9 @@ self.addEventListener('activate', (e) => {
 
 // Önce ağ, olmazsa önbellek: güncellemeler hemen gelir, internet yoksa uygulama yine açılır.
 self.addEventListener('fetch', (e) => {
-  if (e.request.method !== 'GET' || new URL(e.request.url).origin !== location.origin) return;
+  const url = new URL(e.request.url);
+  // ortak kayıtlar (api.php) hiçbir zaman önbellekten verilmez
+  if (e.request.method !== 'GET' || url.origin !== location.origin || url.pathname.endsWith('/api.php')) return;
   e.respondWith(
     fetch(e.request)
       .then((res) => {
