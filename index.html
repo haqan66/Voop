@@ -148,7 +148,7 @@
           <span>Adınız <em class="muted">(okutmalarda görünür)</em></span>
           <input id="userName" type="text" autocomplete="name" maxlength="40" placeholder="Örn. Ahmet">
         </label>
-        <label class="field">
+        <label class="field" id="syncUrlField">
           <span>Ortak liste adresi <em class="muted">(Google Apps Script)</em></span>
           <input id="syncUrl" type="url" inputmode="url" spellcheck="false" autocapitalize="off" placeholder="https://script.google.com/macros/s/…/exec">
         </label>
@@ -247,9 +247,22 @@
 
   <div id="toast" class="toast" hidden></div>
 
+  <!-- açılış: ad sorma -->
+  <div id="welcome" class="welcome" hidden>
+    <form class="welcome-box" id="welcomeForm" autocomplete="off">
+      <img src="icons/icon.svg" alt="" width="76" height="76">
+      <h2>Barkod Kontrol</h2>
+      <p class="muted">Okutmaya başlamak için adınızı yazın. Okuttuğunuz ürünlerde bu isim görünür.</p>
+      <input id="welcomeName" type="text" autocomplete="name" autocapitalize="words" maxlength="40" placeholder="Adınız" aria-label="Adınız" required>
+      <button class="btn btn-primary btn-lg btn-block" type="submit">Başla</button>
+      <p class="muted small" id="welcomeInfo"></p>
+    </form>
+  </div>
+
 
   <script src="vendor/xlsx.full.min.js"></script>
   <script src="vendor/html5-qrcode.min.js"></script>
+  <script src="config.js"></script>
   <script src="data/urun-listesi.js"></script>
   <script src="app.js"></script>
 </body>

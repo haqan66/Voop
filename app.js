@@ -136,7 +136,7 @@
   //   del_newprod yeni ürün / bulunamadı kaydı silindi
   let events = new Map();      // id → olay (bu cihazın ve ekibin tüm olayları)
   let outbox = new Set();      // ortak listeye henüz gönderilmemiş olay id'leri
-  let meta = { lastExport: '', epoch: '', cursor: 0 };
+  let meta = { lastExport: '', epoch: '', cursor: 0, url: '' };
   let state = emptyState();    // olaylardan hesaplanan görünüm
 
   function emptyState() {
@@ -339,7 +339,7 @@
 
     const brands = uniq(products.map((p) => p.brand).filter(Boolean)).sort((a, b) => a.localeCompare(b, 'tr'));
     products.forEach((p) => { p.hay = normText([p.name, p.brand, p.code, p.other, p.cat].join(' ')); p.nName = normText(p.name); });
-    return { sheetName, headerRow: h, header, cols, products, byRow: new Map(products.map((p) => [p.r, p])), brands, newProducts, log };
+    return { sheetName, headerRow: h, header, cols, products, rows, byRow: new Map(products.map((p) => [p.r, p])), brands, newProducts, log };
   }
 
   // ------------------------------------------------------------------
@@ -616,6 +616,7 @@
   // ------------------------------------------------------------------
   function handleCode(code) {
     if (!book) { toast('Önce ürün listesi yüklenmeli'); return; }
+    if (!userName()) { showWelcome(); return; }
     const hits = lookup(code);
     if (hits.length) {
       const first = hits[0];
@@ -1055,7 +1056,7 @@
     if (!book) return;
     const withBc = book.products.filter((p) => p.codes.length).length;
     const c = counts();
-    $('fileInfo').textContent = `${book.products.length} ürün · ${c.checked} kontrol edildi`;
+    $('fileInfo').textContent = `${book.products.length} ürün · ${c.checked} kontrol edildi${userName() ? ' · ' + userName() : ''}`;
     $('fileDetail').innerHTML = `Ürün listesi <b>sabit</b>: ${book.products.length} ürün · ${withBc} barkodlu (${esc(book.sheetName)})`;
     $('brandList').innerHTML = book.brands.map((b) => `<option value="${esc(b)}">`).join('');
   }
@@ -1218,6 +1219,8 @@
   // ------------------------------------------------------------------
   const Sync = {
     url: '',
+    fixed: false,       // adres config.js'te sabit mi
+    productsSent: false,
     busy: false,
     status: 'off', // off | ok | error
     error: '',
@@ -1226,13 +1229,21 @@
     soonTimer: null,
 
     init() {
-      // Ekip linki: ...#baglanti=<adres>
-      const m = location.hash.match(/(?:^#|&)baglanti=([^&]+)/);
-      if (m) {
-        try { localStorage.setItem('bk-sync', decodeURIComponent(m[1])); } catch (e) {}
-        history.replaceState(null, '', location.pathname + location.search);
+      const cfg = String((window.BARKOD_CONFIG && window.BARKOD_CONFIG.ortakListeAdresi) || '').trim();
+      if (cfg) {
+        // Adres sitenin içinde sabit: herkes otomatik olarak ortak sayıma katılır
+        this.url = cfg;
+        this.fixed = true;
+      } else {
+        // Ekip linki: ...#baglanti=<adres>
+        const m = location.hash.match(/(?:^#|&)baglanti=([^&]+)/);
+        if (m) {
+          try { localStorage.setItem('bk-sync', decodeURIComponent(m[1])); } catch (e) {}
+          history.replaceState(null, '', location.pathname + location.search);
+        }
+        try { this.url = localStorage.getItem('bk-sync') || ''; } catch (e) {}
       }
-      try { this.url = localStorage.getItem('bk-sync') || ''; } catch (e) {}
+      if (this.url && meta.url !== this.url) { meta.url = this.url; meta.epoch = ''; meta.cursor = 0; persist(); }
       document.addEventListener('visibilitychange', () => { if (!document.hidden) this.now(); });
       window.addEventListener('online', () => this.now());
       this.loop();
@@ -1287,8 +1298,9 @@
           else { ids.forEach((id) => outbox.delete(id)); persist(); }
         }
         // 2) ekibin yeni olaylarını al
+        let j = null;
         for (let guard = 0; guard < 50; guard++) {
-          const j = await this.call('GET', null, { since: meta.cursor });
+          j = await this.call('GET', null, { since: meta.cursor });
           if (!j.ok) throw new Error(j.error || 'Sunucu hatası');
           if (meta.epoch && j.epoch !== meta.epoch) { await newEpoch(j.epoch); continue; }
           meta.epoch = j.epoch;
@@ -1297,6 +1309,11 @@
           meta.cursor = j.next;
           persist();
           if (!j.more) break;
+        }
+        // 3) ortak tabloda ürün listesi yoksa sabit listeyi bir kez yükle
+        if (j && j.products === false && book && !this.productsSent) {
+          const r = await this.call('POST', { action: 'products', headerRow: book.headerRow, rows: book.rows });
+          if (r.ok) this.productsSent = true;
         }
         this.status = 'ok';
         this.error = '';
@@ -1316,7 +1333,7 @@
     const had = events.size > 0;
     events.clear();
     outbox.clear();
-    meta = { lastExport: '', epoch, cursor: 0 };
+    meta = { lastExport: '', epoch, cursor: 0, url: Sync.url };
     persist();
     afterEvents();
     if (had) toast('Yeni sayım başlatıldı — kayıtlar sıfırlandı');
@@ -1350,23 +1367,53 @@
     pill.className = 'sync-pill ' + cls;
     $('syncText').textContent = text;
     $('syncDetail').innerHTML = detail;
-    $('btnSyncOff').hidden = !Sync.url;
+    $('syncUrlField').hidden = Sync.fixed;
+    $('btnSyncSave').hidden = Sync.fixed;
+    $('btnSyncOff').hidden = Sync.fixed || !Sync.url;
     $('btnTeamLink').hidden = !Sync.url;
+    $('btnTeamLink').textContent = Sync.fixed ? 'Site linkini paylaş' : 'Ekip linkini paylaş';
     $('btnSyncSave').textContent = Sync.url ? 'Kaydet' : 'Bağlan';
     $('btnReset').hidden = !!Sync.url;
     if (document.activeElement !== $('syncUrl')) $('syncUrl').value = Sync.url;
     if (document.activeElement !== $('userName')) $('userName').value = userName();
   }
 
-  async function askName(force) {
-    if (userName() && !force) return userName();
-    const ok = await confirmBox('Adınız',
-      '<p class="small muted">Okuttuğunuz ürünlerde ve Excel çıktısında bu isim görünür.</p><input id="askNameInput" class="modal-input" type="text" autocomplete="name" placeholder="Örn. Ahmet" maxlength="40">',
-      'Kaydet', false, 'askNameInput');
-    const v = ok ? ($('askNameInput').value || '').trim() : '';
-    if (v) { try { localStorage.setItem('bk-user', v); } catch (e) {} }
+  /** Açılış ekranı: siteye giren kişi adını yazıp okutmaya başlar. */
+  function showWelcome() {
+    const today = Sync.url ? teamMembers(24 * 60 * 60 * 1000) : [];
+    $('welcomeInfo').textContent = Sync.url
+      ? (today.length ? `Ortak sayım · bugün okutanlar: ${today.join(', ')}` : 'Ortak sayım · okutmalar ekipteki herkese anında yansır')
+      : '';
+    $('welcomeName').value = userName();
+    $('welcome').hidden = false;
+    pauseCamera();
+    setTimeout(() => $('welcomeName').focus(), 50);
+  }
+
+  function onWelcome(e) {
+    e.preventDefault();
+    const v = $('welcomeName').value.trim().replace(/\s+/g, ' ');
+    if (!v) { $('welcomeName').focus(); return; }
+    if (/^[\d\s-]{4,}$/.test(v)) {
+      // ad kutusuna barkod okutulmuş
+      $('welcomeName').value = '';
+      $('welcomeInfo').textContent = 'Önce adınızı yazın, sonra barkod okutun.';
+      $('welcomeName').focus();
+      return;
+    }
+    try { localStorage.setItem('bk-user', v); } catch (err) {}
+    $('welcome').hidden = true;
     renderSync();
-    return userName();
+    renderFileInfo();
+    toast(`Hoş geldiniz, ${v}`);
+    if (camState === 'paused') resumeCamera();
+    else if (camState === 'off' && wantCamera()) startCamera();
+  }
+
+  function wantCamera() {
+    let want = isTouch() ? '1' : '0';
+    try { want = localStorage.getItem('bk-cam') ?? want; } catch (e) {}
+    return want === '1' && window.isSecureContext;
   }
 
   async function connectSync() {
@@ -1384,12 +1431,12 @@
       if (!send) { events.clear(); outbox.clear(); afterEvents(); }
     }
     try { localStorage.setItem('bk-sync', url); } catch (e) {}
-    if (url !== Sync.url) meta = { lastExport: meta.lastExport, epoch: '', cursor: 0 };
+    if (url !== Sync.url) meta = { lastExport: meta.lastExport, epoch: '', cursor: 0, url };
     Sync.url = url;
     Sync.status = 'connecting';
     persist();
-    if (!userName()) await askName();
     await Sync.now();
+    if (!userName()) showWelcome();
     toast(Sync.status === 'ok' ? 'Ortak listeye bağlandı' : 'Bağlanamadı: ' + Sync.error);
   }
 
@@ -1405,7 +1452,9 @@
   }
 
   async function shareTeamLink() {
-    const link = `${location.origin}${location.pathname}#baglanti=${encodeURIComponent(Sync.url)}`;
+    const link = Sync.fixed || location.protocol === 'file:'
+      ? `${location.origin}${location.pathname}`
+      : `${location.origin}${location.pathname}#baglanti=${encodeURIComponent(Sync.url)}`;
     try {
       if (navigator.share && isTouch()) { await navigator.share({ title: 'Barkod Kontrol', text: 'Ortak barkod sayımına katıl:', url: link }); return; }
     } catch (e) { if (e && e.name === 'AbortError') return; }
@@ -1528,13 +1577,17 @@
     bindKeyboard();
     $('btnReset').addEventListener('click', resetAll);
     $('btnSyncSave').addEventListener('click', connectSync);
+    $('welcomeForm').addEventListener('submit', onWelcome);
     $('btnSyncOff').addEventListener('click', disconnectSync);
     $('btnTeamLink').addEventListener('click', shareTeamLink);
     $('syncPill').addEventListener('click', () => switchTab('log'));
     $('userName').addEventListener('change', (e) => {
       const v = e.target.value.trim();
-      try { if (v) localStorage.setItem('bk-user', v); } catch (err) {}
+      if (!v || /^[\d\s-]{4,}$/.test(v)) { e.target.value = userName(); return; }
+      try { localStorage.setItem('bk-user', v); } catch (err) {}
       renderSync();
+      renderFileInfo();
+      toast('Adınız güncellendi');
     });
 
     try {
@@ -1606,13 +1659,11 @@
     renderAfterChange();
     renderDirty();
     Sync.init();
-    if (Sync.url && !userName()) askName();
 
-    let wantCam = isTouch() ? '1' : '0';
-    try { wantCam = localStorage.getItem('bk-cam') ?? wantCam; } catch (e) {}
     if (!isTouch()) $('camMsg').textContent = 'Bilgisayar kamerasını açın veya USB barkod okuyucuyla okutun.';
-    if (wantCam === '1' && window.isSecureContext) startCamera();
-    else if (!window.isSecureContext) $('camMsg').textContent = 'Kamera için sayfa HTTPS üzerinden açılmalıdır.';
+    if (!window.isSecureContext) $('camMsg').textContent = 'Kamera için sayfa HTTPS üzerinden açılmalıdır.';
+    if (!userName()) showWelcome();          // önce ad, sonra okutma
+    else if (wantCamera()) startCamera();
 
     if ('serviceWorker' in navigator && location.protocol === 'https:') {
       navigator.serviceWorker.register('sw.js').catch(() => {});
@@ -1627,6 +1678,7 @@
     let buf = '', last = 0;
     document.addEventListener('keydown', (e) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (!$('welcome').hidden) return;
       if (!$('confirm').hidden) { if (e.key === 'Escape') $('confirmNo').click(); return; }
       if (e.key === 'Escape' && sheetMode) { closeSheet(true); return; }
       const t = e.target;

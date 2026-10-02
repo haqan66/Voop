@@ -18,10 +18,18 @@
 
 ## Ortak çalışma (2–3 kişi aynı anda)
 
-Okutmalar ücretsiz bir **Google E-Tablosu** üzerinden ekipteki tüm cihazlara dağıtılır. Sunucu kurmaya gerek yoktur.
-Excel ürün listesi değişmez; tüm okutmalar ayrıca E-Tablo’daki **Olaylar** sayfasında satır satır görülebilir.
+Siteye giren herkes **sadece adını yazıp** okutmaya başlar; ayar yapmaz. Okutmalar ücretsiz bir **Google E-Tablosu**
+üzerinden ekipteki tüm cihazlara birkaç saniyede yansır ve E-Tablo’daki sabit ürün listesi **anında güncellenir**:
 
-### Kurulum (bir kez, ~5 dakika — bir kişi yapar)
+| E-Tablo sayfası | İçerik |
+|---|---|
+| **Ürün Listesi** | Sabit Excel listesi; **Yeni Barkod**, **Kontrol Durumu**, **Kontrol Tarihi**, **Kontrol Eden** sütunları her okutmada güncellenir |
+| **Yeni Ürünler** | Listede olmayan / bulunamayan ürünler, ekleyen kişiyle |
+| **Olaylar** | Tüm işlemler satır satır (tarih, kişi, işlem, barkod, ürün) |
+
+Güncel Excel’i E-Tablo’dan **Dosya → İndir → Microsoft Excel (.xlsx)** ile ya da uygulamadan **Excel İndir** ile alabilirsiniz.
+
+### Kurulum (bir kez, ~5 dakika — yalnızca yönetici)
 
 1. https://sheets.new ile yeni bir Google E-Tablosu açın, adını örn. *Barkod Kontrol Ortak* yapın.
 2. **Uzantılar → Apps Script**. Açılan dosyadaki her şeyi silin, depodaki
@@ -29,24 +37,23 @@ Excel ürün listesi değişmez; tüm okutmalar ayrıca E-Tablo’daki **Olaylar
 3. **Dağıt → Yeni dağıtım** → tür olarak **Web uygulaması** seçin:
    - *Şu kullanıcı olarak yürüt*: **Ben**
    - *Erişimi olanlar*: **Herkes**
-   → **Dağıt** → Google’ın istediği izinleri onaylayın (“Gelişmiş → … sayfasına git (güvenli değil)” adımı çıkabilir; betik sizin hesabınızda çalışır).
-4. Çıkan **Web uygulaması URL’sini** (`https://script.google.com/macros/s/…/exec`) kopyalayın.
-5. Uygulamada **Kayıtlar → Ortak Çalışma**: adınızı yazın, adresi yapıştırın, **Bağlan**.
-6. **Ekip linkini paylaş** ile linki WhatsApp vb. ile ekip arkadaşlarınıza gönderin. Linki açan telefon/bilgisayar
-   otomatik bağlanır ve bir kez adını sorar.
+   → **Dağıt** → Google’ın istediği izinleri onaylayın (“Gelişmiş → … sayfasına git” adımı çıkabilir; betik sizin hesabınızda çalışır).
+4. Çıkan **Web uygulaması URL’sini** (`https://script.google.com/macros/s/…/exec`) depodaki **`config.js`** dosyasına yazın:
+   ```js
+   ortakListeAdresi: 'https://script.google.com/macros/s/…/exec',
+   ```
+   (GitHub’da dosyayı açıp kalem simgesiyle düzenleyebilirsiniz.) Siteyi ilk açan kişide ürün listesi E-Tablo’ya otomatik yüklenir.
 
-Üst bardaki gösterge durumu gösterir: **Ortak · 3 kişi** (bağlı), **Gönderiliyor** (sarı), **Bağlantı yok** (kırmızı).
-İnternet kesilse de okutmaya devam edilir; kayıtlar bağlantı gelince otomatik gönderilir.
+Bundan sonra site linkini ekibe göndermeniz yeterli. Üst bardaki gösterge durumu gösterir: **Ortak · 3 kişi** (bağlı),
+**Gönderiliyor** (sarı), **Bağlantı yok** (kırmızı). İnternet kesilse de okutmaya devam edilir; kayıtlar bağlantı gelince gönderilir.
 
-- Herkes aynı listede çalışır: bir kişinin eklediği yeni barkod diğerlerinde de eşleşir, aynı barkodu iki kişi aynı anda
-  “Bulunamadı” işaretlese de tek kayıt oluşur.
-- **Excel İndir** herhangi bir cihazdan yapılabilir; ekibin tüm kayıtlarını içerir.
-- **Yeni sayım başlatmak** için E-Tablo’da **Barkod Kontrol → Yeni sayım başlat** menüsünü kullanın: mevcut kayıtlar
-  arşiv sayfasına taşınır, tüm cihazlar birkaç saniye içinde sıfırlanır. *Olaylar* sayfasındaki satırları elle silmeyin.
-- Bağlantı adresini bilen herkes kayıt ekleyebilir; linki yalnızca ekiple paylaşın.
-- `Kod.gs` güncellenirse Apps Script’te **Dağıt → Dağıtımları yönet → Düzenle → Yeni sürüm** ile yeniden dağıtın (adres değişmez).
+- Bir kişinin eklediği yeni barkod diğerlerinde de hemen eşleşir; aynı barkodu iki kişi aynı anda “Bulunamadı” işaretlese de tek kayıt oluşur.
+- **Yeni sayım** için E-Tablo’da **Barkod Kontrol → Yeni sayım başlat**: mevcut liste ve olaylar arşiv sayfalarına kopyalanır,
+  kontrol bilgileri temizlenir, tüm cihazlar birkaç saniye içinde sıfırlanır. *Olaylar* sayfasındaki satırları elle silmeyin.
+- Site linkini bilen herkes okutma yapabilir (istenen davranış); linki yalnızca ekiple paylaşın.
+- `Kod.gs` güncellenirse Apps Script’te **Dağıt → Dağıtımları yönet → Düzenle → Sürüm: Yeni sürüm** ile yeniden dağıtın (adres değişmez).
 
-Ortak çalışma kurulmazsa uygulama tek cihazda çalışır; kayıtlar o cihazın tarayıcısında saklanır.
+`config.js` boşsa uygulama tek cihazda çalışır; adres istenirse *Kayıtlar → Ortak Çalışma* bölümünden de girilebilir.
 
 ## Excel çıktısı
 
@@ -97,6 +104,7 @@ satırlara düşebileceği için listeyi yeni bir sayımın başında güncelley
 
 ```
 index.html                 arayüz
+config.js                  ortak liste adresi (Google Apps Script)
 app.css                    mobil + masaüstü tasarım (açık / koyu tema)
 app.js                     okuma, eşleştirme, arama, ortak çalışma, Excel yazma
 sw.js                      çevrimdışı çalışma
