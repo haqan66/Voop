@@ -21,6 +21,7 @@
     </div>
     <button id="btnExportTop" class="icon-btn" aria-label="Excel'i dışa aktar" title="Excel'i dışa aktar">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-4.5-4.5M12 15l4.5-4.5M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+      <span class="btn-label">Excel İndir</span>
       <span id="dirtyBadge" class="badge" hidden>0</span>
     </button>
   </header>
@@ -28,6 +29,8 @@
   <main>
     <!-- ============ TARA ============ -->
     <section id="tab-scan" class="tab active">
+      <div class="scan-grid">
+      <div class="scan-main">
       <div class="camera-wrap">
         <div id="reader"></div>
         <div id="cameraIdle" class="camera-idle">
@@ -38,6 +41,9 @@
           <p id="camMsg" class="muted small"></p>
         </div>
         <div class="camera-tools" id="cameraTools" hidden>
+          <button id="btnSwitchCam" class="cam-btn" aria-label="Kamerayı değiştir" title="Kamerayı değiştir" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7h-3l-2-3H9L7 7H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1V8a1 1 0 0 0-1-1ZM9 13a3 3 0 0 1 5.2-2M15 13a3 3 0 0 1-5.2 2M14 9v2h-2M10 17v-2h2"/></svg>
+          </button>
           <button id="btnTorch" class="cam-btn" aria-label="Fener" hidden>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></svg>
           </button>
@@ -62,11 +68,19 @@
         <input id="manualInput" type="text" inputmode="numeric" enterkeyhint="search" placeholder="Barkodu elle girin" aria-label="Barkod">
         <button class="btn btn-primary" type="submit">Kontrol</button>
       </form>
+      <p class="kbd-hint" id="kbdHint">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18v12H3zM7 10h.01M11 10h.01M15 10h.01M7 14h10"/></svg>
+        <span><b>USB / el barkod okuyucu hazır.</b> Sayfada herhangi bir yerdeyken okutmanız yeterli.</span>
+      </p>
+      </div>
 
+      <div class="scan-side">
       <div class="stats" id="stats"></div>
 
       <h2 class="section-title">Son okutulanlar</h2>
       <ul id="recentList" class="list"></ul>
+      </div>
+      </div>
     </section>
 
     <!-- ============ LİSTE ============ -->
@@ -83,11 +97,27 @@
         <div class="muted small" id="listCount"></div>
       </div>
       <ul id="productList" class="list"></ul>
+      <div class="table-wrap" id="productTableWrap" hidden>
+        <table class="ptable" id="productTable">
+          <thead><tr>
+            <th class="c-dot"></th>
+            <th data-sort="code">Stok Kodu</th>
+            <th data-sort="name">Ürün Adı</th>
+            <th data-sort="brand">Marka</th>
+            <th data-sort="barcode">Barkod</th>
+            <th data-sort="newbc">Yeni Barkod</th>
+            <th data-sort="status">Kontrol</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
       <button id="listMore" class="btn btn-ghost btn-block" hidden>Daha fazla göster</button>
     </section>
 
     <!-- ============ KAYITLAR ============ -->
     <section id="tab-log" class="tab">
+      <div class="log-grid">
+      <div class="log-side">
       <div class="card">
         <h2 class="card-title">Excel Çıktısı</h2>
         <p class="muted small">Yeni barkodlar <b>“Yeni Barkod”</b> sütununa, yeni / bulunamayan ürünler <b>“Yeni Ürünler”</b> sayfasına, tüm okutmalar <b>“Tarama Geçmişi”</b> sayfasına yazılır.</p>
@@ -97,6 +127,8 @@
         </div>
       </div>
 
+      </div>
+      <div class="log-main">
       <div class="chips" id="logFilters">
         <button class="chip active" data-f="all">Tümü</button>
         <button class="chip" data-f="newbc">Yeni barkod</button>
@@ -104,8 +136,9 @@
         <button class="chip" data-f="scan">Tarama geçmişi</button>
       </div>
       <ul id="logList" class="list"></ul>
+      </div>
 
-      <div class="card">
+      <div class="card file-card">
         <h2 class="card-title">Ürün Listesi Dosyası</h2>
         <p class="muted small" id="fileDetail"></p>
         <div class="row gap wrap">
@@ -115,11 +148,13 @@
           </label>
           <button id="btnReset" class="btn btn-danger-ghost grow">Kayıtları Sıfırla</button>
         </div>
+        <p class="muted small drop-hint">İpucu: Excel dosyasını sayfanın üzerine sürükleyip bırakarak da yükleyebilirsiniz.</p>
+      </div>
       </div>
     </section>
   </main>
 
-  <nav class="tabbar">
+  <nav class="tabbar" aria-label="Bölümler">
     <button class="tabbtn active" data-tab="scan">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M7 8v8M10 8v8M13 8v8M17 8v8"/></svg>
       <span>Tara</span>
@@ -201,6 +236,13 @@
   </div>
 
   <div id="toast" class="toast" hidden></div>
+
+  <div id="dropZone" class="dropzone" hidden>
+    <div>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3m0 0L7.5 7.5M12 3l4.5 4.5M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+      <p>Excel ürün listesini buraya bırakın</p>
+    </div>
+  </div>
 
   <script src="vendor/xlsx.full.min.js"></script>
   <script src="vendor/html5-qrcode.min.js"></script>

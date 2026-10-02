@@ -361,6 +361,12 @@
     return [F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E, F.CODE_128, F.CODE_39, F.CODE_93, F.ITF, F.CODABAR, F.QR_CODE].filter((x) => x !== undefined);
   }
 
+  let cameras = [];
+  const isWide = () => window.matchMedia('(min-width: 1024px)').matches;
+  const isTouch = () => window.matchMedia('(pointer: coarse)').matches;
+
+  function savedCameraId() { try { return localStorage.getItem('bk-camid') || ''; } catch (e) { return ''; } }
+
   async function startCamera() {
     if (camState === 'on' || camState === 'starting') return;
     if (!window.Html5Qrcode) { $('camMsg').textContent = 'Tarayıcı kütüphanesi yüklenemedi.'; return; }
@@ -377,9 +383,9 @@
         experimentalFeatures: { useBarCodeDetectorIfSupported: true },
         verbose: false,
       });
-      await scanner.start(
-        { facingMode: 'environment' },
-        {
+      const camId = savedCameraId();
+      const camCfg = camId ? { deviceId: { exact: camId } } : { facingMode: 'environment' };
+      const scanCfg = {
           fps: 15,
           qrbox: (w, h) => {
             const width = Math.floor(w * 0.86);
@@ -388,16 +394,22 @@
           },
           aspectRatio: 4 / 3,
           disableFlip: true,
-        },
-        onScan,
-        () => {}
-      );
+      };
+      try {
+        await scanner.start(camCfg, scanCfg, onScan, () => {});
+      } catch (err) {
+        if (!camId) throw err;
+        // kayıtlı kamera artık yoksa varsayılana dön
+        try { localStorage.removeItem('bk-camid'); } catch (e) {}
+        await scanner.start({ facingMode: 'environment' }, scanCfg, onScan, () => {});
+      }
       camState = 'on';
       $('cameraIdle').hidden = true;
       $('cameraTools').hidden = false;
       document.querySelector('.camera-wrap').classList.add('running');
       addScanline();
       setupTorch();
+      setupCameraSwitch();
       try { localStorage.setItem('bk-cam', '1'); } catch (e) {}
     } catch (err) {
       camState = 'off';
@@ -436,6 +448,23 @@
       l.className = 'scanline';
       $('reader').appendChild(l);
     }
+  }
+
+  async function setupCameraSwitch() {
+    try { cameras = await Html5Qrcode.getCameras(); } catch (e) { cameras = []; }
+    $('btnSwitchCam').hidden = cameras.length < 2;
+  }
+
+  async function switchCamera() {
+    if (cameras.length < 2 || !scanner) return;
+    let cur = '';
+    try { cur = scanner.getRunningTrackSettings().deviceId || ''; } catch (e) {}
+    const i = cameras.findIndex((c) => c.id === cur);
+    const next = cameras[(i + 1) % cameras.length];
+    try { localStorage.setItem('bk-camid', next.id); } catch (e) {}
+    await stopCamera();
+    await startCamera();
+    toast(next.label || 'Kamera değiştirildi');
   }
 
   function setupTorch() {
@@ -566,7 +595,7 @@
     $('nameSearch').value = '';
     renderSearchResults('');
     openSheet('nomatch');
-    setTimeout(() => $('nameSearch').focus(), 150);
+    $('nameSearch').focus();
   }
 
   function renderSearchResults(q) {
@@ -649,7 +678,7 @@
     $('npNote').value = n.note || '';
     $('btnKeepNotFound').textContent = n.status === S.NEWPROD ? 'Vazgeç' : 'Sadece “Bulunamadı” olarak bırak';
     openSheet('newprod');
-    setTimeout(() => $('npName').focus(), 150);
+    $('npName').focus();
   }
 
   function saveNewProduct(e) {
@@ -787,6 +816,55 @@
   }
 
   let listFilter = 'all', listLimit = 100;
+  let sortKey = '', sortDir = 1;
+
+  function sortValue(p, key) {
+    const { main, extra } = productCodes(p);
+    const chk = state.checked[p.r];
+    switch (key) {
+      case 'code': return Number(p.code) || p.code;
+      case 'name': return p.name;
+      case 'brand': return p.brand;
+      case 'barcode': return main[0] || '';
+      case 'newbc': return extra[0] || '';
+      case 'status': return chk ? (chk.s === S.MATCH ? 1 : 2) : 0;
+      default: return p.r;
+    }
+  }
+
+  function renderTable(items, q) {
+    $('productList').hidden = true;
+    $('productTableWrap').hidden = false;
+    if (sortKey) {
+      items = items.slice().sort((a, b) => {
+        const x = sortValue(a, sortKey), y = sortValue(b, sortKey);
+        const c = typeof x === 'number' && typeof y === 'number' ? x - y : String(x).localeCompare(String(y), 'tr', { numeric: true });
+        return c * sortDir;
+      });
+    }
+    document.querySelectorAll('#productTable th[data-sort]').forEach((th) => {
+      th.classList.toggle('sorted', th.dataset.sort === sortKey);
+      th.classList.toggle('desc', th.dataset.sort === sortKey && sortDir < 0);
+    });
+    const hl = normText(q);
+    const shown = items; // masaüstünde tüm liste tek tabloda (kaydırılabilir)
+    $('productTable').tBodies[0].innerHTML = shown.length ? shown.map((p) => {
+      const { main, extra } = productCodes(p);
+      const chk = state.checked[p.r];
+      const cls = chk ? (chk.s === S.MATCH ? 'ok' : 'info') : 'none';
+      return `<tr data-r="${p.r}">
+        <td class="c-dot"><span class="dot ${cls}"></span></td>
+        <td class="mono">${esc(p.code)}</td>
+        <td class="c-name">${hl ? highlight(p.name, q) : esc(p.name)}</td>
+        <td>${esc(p.brand)}</td>
+        <td class="mono">${main.length ? esc(main.join(', ')) : '<span class="tag muted">Yok</span>'}</td>
+        <td class="mono">${extra.length ? `<span class="tag info">${esc(extra.join(', '))}</span>` : ''}</td>
+        <td class="c-status">${chk ? `<span class="tag ${cls}">${esc(chk.s)}</span> <span class="muted small">${fmtDate(chk.t)}</span>` : '<span class="muted small">—</span>'}</td>
+      </tr>`;
+    }).join('') : '<tr><td colspan="7" class="empty">Sonuç yok</td></tr>';
+    $('listMore').hidden = true;
+  }
+
   function renderList() {
     if (!book) return;
     const q = $('listSearch').value;
@@ -802,6 +880,9 @@
       }
     });
     $('listCount').textContent = `${items.length} ürün`;
+    if (isWide()) { renderTable(items, q); return; }
+    $('productList').hidden = false;
+    $('productTableWrap').hidden = true;
     const shown = items.slice(0, listLimit);
     $('productList').innerHTML = shown.length ? shown.map((p) => {
       const { main, extra } = productCodes(p);
@@ -1074,6 +1155,7 @@
     document.querySelectorAll('.tabbtn').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.tab)));
     $('btnStartCam').addEventListener('click', startCamera);
     $('btnStopCam').addEventListener('click', stopCamera);
+    $('btnSwitchCam').addEventListener('click', switchCamera);
     $('btnTorch').addEventListener('click', toggleTorch);
 
     $('manualForm').addEventListener('submit', (e) => {
@@ -1089,7 +1171,14 @@
     // Eşleşme yok paneli
     let st = null;
     $('nameSearch').addEventListener('input', (e) => { clearTimeout(st); st = setTimeout(() => renderSearchResults(e.target.value), 80); });
-    $('nameSearch').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); } });
+    $('nameSearch').addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      // Arama kutusuna barkod okutulduysa (USB okuyucu) bunu yeni bir okutma say
+      const v = cleanCode(e.target.value);
+      if (/^\d{8,14}$/.test(v)) { closeSheet(true); lastCode = v; lastAt = Date.now(); handleCode(v); return; }
+      e.target.blur();
+    });
     $('searchResults').addEventListener('click', (e) => {
       const li = e.target.closest('[data-r]');
       if (li) assignBarcode(+li.dataset.r, sheetCode, true);
@@ -1115,6 +1204,18 @@
     });
     $('listMore').addEventListener('click', () => { listLimit += 200; renderList(); });
     $('productList').addEventListener('click', (e) => { const li = e.target.closest('[data-r]'); if (li) openDetail(+li.dataset.r); });
+    $('productTable').addEventListener('click', (e) => {
+      const th = e.target.closest('th[data-sort]');
+      if (th) {
+        if (sortKey === th.dataset.sort) { if (sortDir > 0) sortDir = -1; else { sortKey = ''; sortDir = 1; } }
+        else { sortKey = th.dataset.sort; sortDir = 1; }
+        renderList();
+        return;
+      }
+      const tr = e.target.closest('tr[data-r]');
+      if (tr) openDetail(+tr.dataset.r);
+    });
+    window.matchMedia('(min-width: 1024px)').addEventListener('change', () => { if ($('tab-list').classList.contains('active')) renderList(); });
 
     // Kayıtlar sekmesi
     $('logFilters').addEventListener('click', (e) => {
@@ -1152,7 +1253,9 @@
 
     $('btnDownload').addEventListener('click', doDownload);
     $('btnShare').addEventListener('click', doShare);
-    $('btnExportTop').addEventListener('click', () => switchTab('log'));
+    $('btnExportTop').addEventListener('click', () => (isWide() ? doDownload() : switchTab('log')));
+    bindKeyboard();
+    bindDrop();
     $('fileInput').addEventListener('change', onFileChosen);
     $('btnReset').addEventListener('click', resetAll);
 
@@ -1202,14 +1305,74 @@
       $('fileInfo').textContent = 'Ürün listesi yüklenmedi';
       showResult('warn', 'Ürün listesi yok', '', 'Kayıtlar sekmesinden “Excel Yükle” ile ürün listesini seçin.');
     }
-    let wantCam = '1';
-    try { wantCam = localStorage.getItem('bk-cam') ?? '1'; } catch (e) {}
+    let wantCam = isTouch() ? '1' : '0';
+    try { wantCam = localStorage.getItem('bk-cam') ?? wantCam; } catch (e) {}
+    if (!isTouch()) $('camMsg').textContent = 'Bilgisayar kamerasını açın veya USB barkod okuyucuyla okutun.';
     if (wantCam === '1' && window.isSecureContext) startCamera();
     else if (!window.isSecureContext) $('camMsg').textContent = 'Kamera için sayfa HTTPS üzerinden açılmalıdır.';
 
     if ('serviceWorker' in navigator && location.protocol === 'https:') {
       navigator.serviceWorker.register('sw.js').catch(() => {});
     }
+  }
+
+  // ------------------------------------------------------------------
+  // Masaüstü: USB / el barkod okuyucu, kısayollar, sürükle-bırak
+  // ------------------------------------------------------------------
+  function bindKeyboard() {
+    // Barkod okuyucular klavye gibi çok hızlı yazar ve sonunda Enter gönderir.
+    let buf = '', last = 0;
+    document.addEventListener('keydown', (e) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (!$('confirm').hidden) { if (e.key === 'Escape') $('confirmNo').click(); return; }
+      if (e.key === 'Escape' && sheetMode) { closeSheet(true); return; }
+      const t = e.target;
+      const inField = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
+      if (inField) return;
+      if (e.key === '/' && !sheetMode) {
+        e.preventDefault();
+        const target = $('tab-list').classList.contains('active') ? $('listSearch') : $('manualInput');
+        target.focus();
+        return;
+      }
+      const now = performance.now();
+      if (e.key === 'Enter') {
+        const code = cleanCode(buf);
+        buf = '';
+        if (code.length >= 4 && now - last < 300) {
+          e.preventDefault();
+          if (sheetMode && sheetMode !== 'nomatch') return;
+          if (sheetMode === 'nomatch') closeSheet(true);
+          if (!$('tab-scan').classList.contains('active')) switchTab('scan');
+          lastCode = code; lastAt = Date.now();
+          handleCode(code);
+        }
+        return;
+      }
+      if (e.key.length === 1) {
+        if (now - last > 120) buf = '';
+        buf += e.key;
+        last = now;
+      }
+    });
+  }
+
+  function bindDrop() {
+    const dz = $('dropZone');
+    let depth = 0;
+    const hasFile = (e) => e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files');
+    window.addEventListener('dragenter', (e) => { if (!hasFile(e)) return; e.preventDefault(); depth++; dz.hidden = false; });
+    window.addEventListener('dragover', (e) => { if (hasFile(e)) e.preventDefault(); });
+    window.addEventListener('dragleave', (e) => { if (!hasFile(e)) return; depth = Math.max(0, depth - 1); if (!depth) dz.hidden = true; });
+    window.addEventListener('drop', (e) => {
+      if (!hasFile(e)) return;
+      e.preventDefault();
+      depth = 0; dz.hidden = true;
+      const f = e.dataTransfer.files[0];
+      if (!f) return;
+      if (!/\.(xlsx|xls)$/i.test(f.name)) { toast('Lütfen bir Excel dosyası (.xlsx) bırakın'); return; }
+      onFileChosen({ target: { files: [f], value: '' } });
+    });
   }
 
   // test/hata ayıklama için
