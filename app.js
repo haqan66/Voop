@@ -15,6 +15,7 @@
   const COL_STATUS = 'Kontrol Durumu';
   const COL_DATE = 'Kontrol Tarihi';
   const COL_BY = 'Kontrol Eden';
+  const COL_COUNT = 'Stok Adedi';
   const POLL_MS = 4000; // ortak listeyi yoklama aralığı
   const SAME_CODE_COOLDOWN = 2500; // aynı barkodu tekrar saymamak için (ms)
 
@@ -134,6 +135,8 @@
   //   notfound    barkod bulunamadı olarak işaretlendi (pid)
   //   newprod     yeni ürün eklendi / güncellendi (pid, code, name, brand, note)
   //   del_newprod yeni ürün / bulunamadı kaydı silindi
+  //   count       stok sayımı (r veya pid, qty) — son girilen adet geçerlidir
+  //   count_del   sayım kaydı silindi
   let events = new Map();      // id → olay (bu cihazın ve ekibin tüm olayları)
   let outbox = new Set();      // ortak listeye henüz gönderilmemiş olay id'leri
   let meta = { lastExport: '', epoch: '', cursor: 0 };
@@ -145,6 +148,7 @@
       checked: {},     // { satırNo: { s: durum, t: tarih, by: kişi } }
       newProducts: [], // [{ id, barcode, name, brand, note, status, t, by }]
       log: [],         // [{ t, code, result, name, by }]
+      counts: {},      // { satırNo | 'n:<yeni ürün id>': { q: adet, t, by } }  stok sayımı
       dirty: 0,        // son dışa aktarımdan beri gelen değişiklik sayısı
     };
   }
@@ -206,6 +210,16 @@
           log(S.DELETED);
           break;
         }
+        case 'count': {
+          const key = countKey(ev);
+          st.counts[key] = { q: ev.qty, t: ev.t, by };
+          log(`Sayım: ${fmtQty(ev.qty)}`);
+          break;
+        }
+        case 'count_del':
+          delete st.counts[countKey(ev)];
+          log('Sayım silindi');
+          break;
         default: break;
       }
     }
@@ -215,6 +229,9 @@
     st.dirty = meta.lastExport ? list.filter((e) => e.t > meta.lastExport).length : list.length;
     state = st;
   }
+
+  function countKey(ev) { return ev.r !== undefined && ev.r !== null ? String(ev.r) : 'n:' + ev.pid; }
+  function fmtQty(q) { return Number(q).toLocaleString('tr-TR', { maximumFractionDigits: 3 }); }
 
   function persist() {
     DB.set('events', [...events.values()]);
@@ -293,6 +310,7 @@
       status: idx(COL_STATUS),
       date: idx(COL_DATE),
       by: idx(COL_BY),
+      count: idx(COL_COUNT),
     };
 
     const products = [];
@@ -525,6 +543,8 @@
       $('cameraTools').hidden = false;
       document.querySelector('.camera-wrap').classList.add('running');
       addScanline();
+      // kütüphanenin "Scanner paused" yazısını Türkçeleştir
+      [...$('reader').querySelectorAll('div')].forEach((d) => { if (d.textContent === 'Scanner paused') d.textContent = 'Kamera duraklatıldı'; });
       setupTorch();
       setupCameraSwitch();
       try { localStorage.setItem('bk-cam', '1'); } catch (e) {}
@@ -608,7 +628,8 @@
     // Aynı barkod kamerada durduğu sürece tekrar sayılmaz; çekilip tekrar okutulursa sayılır
     if (code === lastCode && t - lastAt < SAME_CODE_COOLDOWN) { lastAt = t; return; }
     lastCode = code; lastAt = t;
-    handleCode(code);
+    if (activeTab() === 'count') countFind(code);
+    else handleCode(code);
   }
 
   // ------------------------------------------------------------------
@@ -697,10 +718,21 @@
     if (isTouch()) return;
     setTimeout(() => {
       if (sheetMode || !$('confirm').hidden || !$('welcome').hidden) return;
-      if (!$('tab-scan').classList.contains('active')) return;
-      const el = $('manualInput');
-      if (document.activeElement !== el) el.focus({ preventScroll: true });
+      const el = scanInputFor(activeTab());
+      if (el && document.activeElement !== el) el.focus({ preventScroll: true });
     }, 0);
+  }
+
+  function activeTab() {
+    const t = document.querySelector('.tab.active');
+    return t ? t.id.replace('tab-', '') : '';
+  }
+
+  /** Sekmenin barkod okutma kutusu (Tara: barkod kutusu, Sayım: ürün kutusu ya da açıksa adet kutusu). */
+  function scanInputFor(tab) {
+    if (tab === 'scan') return $('manualInput');
+    if (tab === 'count') return $('countCard').hidden ? $('countInput') : $('qtyInput');
+    return null;
   }
 
   function openNoMatch(code) {
@@ -837,6 +869,7 @@
         <dt>Yeni barkod</dt><dd class="mono">${extra.length ? esc(extra.join(', ')) : '—'}</dd>
         ${p.cat ? `<dt>Kategori</dt><dd>${esc(p.cat)}</dd>` : ''}
         ${p.qty ? `<dt>Miktar</dt><dd>${esc(p.qty)}</dd>` : ''}
+        <dt>Stok adedi</dt><dd>${state.counts[r] ? `<b>${fmtQty(state.counts[r].q)}</b> <span class="muted small">${fmtDate(state.counts[r].t)}${state.counts[r].by ? ' · ' + esc(state.counts[r].by) : ''}</span>` : '<span class="tag muted">Sayılmadı</span>'}</dd>
         <dt>Kontrol</dt><dd>${chk ? `<span class="tag ${chk.s === S.MATCH ? 'ok' : 'info'}">${esc(chk.s)}</span> <span class="muted small">${fmtDate(chk.t)}${chk.by ? ' · ' + esc(chk.by) : ''}</span>` : (p.fileStatus ? `<span class="tag muted">${esc(p.fileStatus)}</span> <span class="muted small">${esc(p.fileDate)}</span>` : '<span class="tag muted">Kontrol edilmedi</span>')}</dd>
       </dl>
       <form id="detailForm" class="manual" autocomplete="off">
@@ -857,6 +890,211 @@
       assignBarcode(r, code, false);
     });
     openSheet('detail');
+  }
+
+  // ------------------------------------------------------------------
+  // Stok sayımı
+  // ------------------------------------------------------------------
+  let countTarget = null; // { kind: 'p', r } | { kind: 'n', pid }
+
+  /** Kamera, Tara ve Sayım sekmelerinde ortak: açık sekmeye taşınır. */
+  function moveCamera(tab) {
+    // bilgisayarda el okuyucuyla sayarken kapalı kamera kutusu Sayım ekranında yer kaplamasın
+    if (tab === 'count' && !isTouch() && camState === 'off') tab = 'scan';
+    const cam = document.querySelector('.camera-wrap');
+    const slot = tab === 'count' ? $('countCamSlot') : (tab === 'scan' ? $('tab-scan').querySelector('.scan-main') : null);
+    if (!cam || !slot || cam.parentElement === slot) return;
+    slot.insertBefore(cam, slot.firstChild);
+    const v = cam.querySelector('video');
+    if (v && v.paused && camState === 'on') v.play().catch(() => {});
+  }
+
+  function countInfo(t) {
+    if (!t) return null;
+    if (t.kind === 'p') {
+      const p = book.byRow.get(t.r);
+      if (!p) return null;
+      const { main, extra } = productCodes(p);
+      return { key: String(t.r), name: p.name, brand: p.brand, stok: p.code, code: main[0] || extra[0] || '', codes: main.concat(extra) };
+    }
+    const n = state.newProducts.find((x) => x.id === t.pid);
+    if (!n) return null;
+    return { key: 'n:' + n.id, name: n.name || '(isimsiz)', brand: n.brand, stok: '', code: n.barcode, codes: [n.barcode], isNew: true };
+  }
+
+  /** Barkod veya ürün adıyla ürünü bulur. */
+  function countFind(text) {
+    const raw = String(text || '').trim();
+    if (!raw) return;
+    if (!userName()) { showWelcome(); return; }
+    const code = cleanCode(raw);
+    const hits = lookup(code);
+    if (hits.length) {
+      $('countInput').value = '';
+      $('countResults').innerHTML = '';
+      const h = hits[0];
+      selectCount(h.kind === 'p' ? { kind: 'p', r: h.ref } : { kind: 'n', pid: h.ref });
+      if (hits.length > 1) toast(`Bu barkod listede ${hits.length} üründe kayıtlı; ilki seçildi`);
+      return;
+    }
+    if (/^[0-9A-Z-]{6,}$/.test(code) && /\d{6,}/.test(code)) {
+      // bilinmeyen barkod: adla arama
+      $('countInput').value = '';
+      countMessage('bad', `<b>${esc(code)}</b> listede yok. Ürün adını yazıp listeden seçin.`);
+      beep('bad');
+      $('countResults').innerHTML = '';
+      focusScan();
+      return;
+    }
+    // ürün adıyla: tek ürün çıkarsa doğrudan seç, yoksa listeden seçilir
+    const { exact } = searchProducts(raw, 2);
+    if (exact.length === 1) { $('countInput').value = ''; selectCount({ kind: 'p', r: exact[0].r }); return; }
+    renderCountResults(raw);
+  }
+
+  function countMessage(kind, html) {
+    const m = $('countMsg');
+    if (!html) { m.hidden = true; return; }
+    m.className = 'count-msg ' + kind;
+    m.innerHTML = html;
+    m.hidden = false;
+  }
+
+  function renderCountResults(q) {
+    const ul = $('countResults');
+    if (normText(q).length < 2) { ul.innerHTML = ''; return; }
+    const { exact, similar } = searchProducts(q, 40);
+    const items = exact.concat(similar.slice(0, 10));
+    countMessage('', '');
+    ul.innerHTML = items.length ? items.map((p) => {
+      const c = state.counts[p.r];
+      const { main } = productCodes(p);
+      return `<li class="item" data-r="${p.r}">
+        <div class="item-main">
+          <div class="item-title">${highlight(p.name, q)}</div>
+          <div class="item-sub"><span>${esc(p.brand)}</span><span>Stok: ${esc(p.code)}</span><span class="mono">${esc(main[0] || '')}</span></div>
+        </div>
+        <div class="item-side">${c ? `<span class="tag ok">${fmtQty(c.q)}</span>` : '<span class="tag muted">Sayılmadı</span>'}</div>
+      </li>`;
+    }).join('') : `<li class="empty">“${esc(q)}” ile eşleşen ürün yok.</li>`;
+  }
+
+  function selectCount(target) {
+    const info = countInfo(target);
+    if (!info) return;
+    countTarget = target;
+    const prev = state.counts[info.key];
+    $('countName').textContent = info.name;
+    $('countMeta').innerHTML = [info.brand && esc(info.brand), info.stok && 'Stok kodu: ' + esc(info.stok), info.code && `<span class="mono">${esc(info.code)}</span>`, info.isNew && '<span class="tag info">Yeni ürün</span>']
+      .filter(Boolean).join(' · ');
+    $('countPrev').innerHTML = prev
+      ? `Kayıtlı stok adedi: <b>${fmtQty(prev.q)}</b> <span class="muted">(${fmtDate(prev.t)}${prev.by ? ' · ' + esc(prev.by) : ''})</span> — yeni adet yazılırsa değiştirilir.`
+      : '<span class="muted">Bu ürün henüz sayılmadı.</span>';
+    $('qtyInput').value = '';
+    $('qtyInput').placeholder = prev ? fmtQty(prev.q) : '0';
+    $('countCard').hidden = false;
+    $('countResults').innerHTML = '';
+    countMessage('', '');
+    pauseCamera();
+    beep('info');
+    $('qtyInput').focus();
+  }
+
+  function closeCountCard() {
+    countTarget = null;
+    $('countCard').hidden = true;
+    $('qtyInput').value = '';
+    if (activeTab() === 'count') resumeCamera();
+    focusScan();
+  }
+
+  function saveQty(e) {
+    e.preventDefault();
+    const raw = $('qtyInput').value.trim().replace(/\s+/g, '');
+    // Adet kutusuna barkod okutulduysa: o ürüne geç
+    if (/^\d{8,}$/.test(raw)) { $('qtyInput').value = ''; countFind(raw); return; }
+    const v = raw.replace(',', '.');
+    if (!/^\d+(\.\d+)?$/.test(v)) { toast('Geçerli bir stok adedi yazın'); $('qtyInput').select(); return; }
+    const info = countInfo(countTarget);
+    if (!info) { closeCountCard(); return; }
+    const qty = Number(v);
+    commit(Object.assign({ type: 'count', qty, code: info.code, name: info.name, stok: info.stok, brand: info.brand },
+      countTarget.kind === 'p' ? { r: countTarget.r } : { pid: countTarget.pid }));
+    countMessage('ok', `✓ <b>${esc(info.name)}</b> — stok adedi <b>${fmtQty(qty)}</b> kaydedildi`);
+    beep('ok');
+    closeCountCard();
+  }
+
+  function renderCount() {
+    if (!book) return;
+    const entries = Object.entries(state.counts);
+    const counted = entries.filter(([k]) => !k.startsWith('n:')).length;
+    const total = entries.reduce((a, [, c]) => a + Number(c.q || 0), 0);
+    $('countStats').innerHTML = `
+      <div class="stat ok"><b>${counted}</b><span>Sayılan ürün</span></div>
+      <div class="stat"><b>${book.products.length - counted}</b><span>Sayılmayan</span></div>
+      <div class="stat info"><b>${fmtQty(total)}</b><span>Toplam adet</span></div>
+      <div class="stat"><b>${uniq(entries.map(([, c]) => c.by).filter(Boolean)).length}</b><span>Sayan kişi</span></div>`;
+    const recent = entries.sort((a, b) => (a[1].t < b[1].t ? 1 : -1)).slice(0, isWide() ? 40 : 20);
+    const trash = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></svg>';
+    $('countList').innerHTML = recent.length ? recent.map(([key, c]) => {
+      const info = countInfo(key.startsWith('n:') ? { kind: 'n', pid: key.slice(2) } : { kind: 'p', r: +key });
+      if (!info) return '';
+      return `<li class="item" data-ckey="${esc(key)}">
+        <div class="item-main">
+          <div class="item-title">${esc(info.name)}</div>
+          <div class="item-sub"><span class="mono">${esc(info.code)}</span><span>${fmtTime(c.t)}</span>${byTag(c.by)}</div>
+        </div>
+        <span class="count-qty">${fmtQty(c.q)}</span>
+        <button class="del-btn" data-cdel="${esc(key)}" aria-label="Sayımı sil">${trash}</button>
+      </li>`;
+    }).join('') : '<li class="empty">Henüz sayım yok. Ürünün barkodunu okutun veya adını yazın, stok adedini girin.</li>';
+  }
+
+  function bindCount() {
+    $('countForm').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const v = $('countInput').value;
+      countFind(v);
+    });
+    let ct = null;
+    $('countInput').addEventListener('input', (e) => {
+      clearTimeout(ct);
+      const v = e.target.value;
+      if (/^\d+$/.test(v.trim())) { $('countResults').innerHTML = ''; return; } // barkod yazılıyor
+      ct = setTimeout(() => renderCountResults(v), 120);
+    });
+    $('countInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Tab' && !e.shiftKey) { e.preventDefault(); if (e.target.value.trim()) countFind(e.target.value); }
+    });
+    $('qtyForm').addEventListener('submit', saveQty);
+    $('qtyInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeCountCard(); }
+      if (e.key === 'Tab' && !e.shiftKey) { e.preventDefault(); $('qtyForm').requestSubmit(); }
+    });
+    $('qtyCancel').addEventListener('click', closeCountCard);
+    $('countResults').addEventListener('click', (e) => {
+      const li = e.target.closest('[data-r]');
+      if (li) { $('countInput').value = ''; selectCount({ kind: 'p', r: +li.dataset.r }); }
+    });
+    $('countList').addEventListener('click', async (e) => {
+      const del = e.target.closest('[data-cdel]');
+      if (del) {
+        const key = del.dataset.cdel;
+        const info = countInfo(key.startsWith('n:') ? { kind: 'n', pid: key.slice(2) } : { kind: 'p', r: +key });
+        const c = state.counts[key];
+        if (!info || !c) return;
+        if (!(await confirmBox('Sayım silinsin mi?', `<p><b>${esc(info.name)}</b></p><p>Stok adedi: <b>${fmtQty(c.q)}</b></p>`, 'Sil', true))) return;
+        commit(Object.assign({ type: 'count_del', code: info.code, name: info.name }, key.startsWith('n:') ? { pid: key.slice(2) } : { r: +key }));
+        toast('Sayım silindi');
+        return;
+      }
+      const li = e.target.closest('[data-ckey]');
+      if (li) {
+        const key = li.dataset.ckey;
+        selectCount(key.startsWith('n:') ? { kind: 'n', pid: key.slice(2) } : { kind: 'p', r: +key });
+      }
+    });
   }
 
   // ------------------------------------------------------------------
@@ -910,18 +1148,19 @@
   }
 
   const RESULT_CLASS = { [S.MATCH]: 'ok', [S.NEWBC]: 'info', [S.NOTFOUND]: 'warn', [S.NEWPROD]: 'info', [S.NEWPROD_EDIT]: 'info', [S.NOMATCH]: 'bad', [S.UNDO]: 'muted', [S.DELETED]: 'muted' };
+  const resultClass = (r) => RESULT_CLASS[r] || (/^Sayım/.test(r || '') ? 'info' : 'muted');
   const byTag = (by) => (by && Sync.url ? `<span class="who">${esc(by)}</span>` : '');
 
   function renderRecent() {
     const items = state.log.slice(-(isWide() ? 12 : 8)).reverse();
     $('recentList').innerHTML = items.length ? items.map((l) => `
       <li class="item" data-code="${esc(l.code)}">
-        <span class="dot ${RESULT_CLASS[l.result] || 'none'}"></span>
+        <span class="dot ${resultClass(l.result)}"></span>
         <div class="item-main">
           <div class="item-title">${esc(l.name || l.code)}</div>
           <div class="item-sub"><span class="mono">${esc(l.code)}</span><span>${fmtTime(l.t)}</span>${byTag(l.by)}</div>
         </div>
-        <span class="tag ${RESULT_CLASS[l.result] || 'muted'}">${esc(l.result)}</span>
+        <span class="tag ${resultClass(l.result)}">${esc(l.result)}</span>
       </li>`).join('') : '<li class="empty">Henüz okutma yok. Kamerayı başlatıp barkodu okutun.</li>';
   }
 
@@ -938,6 +1177,7 @@
       case 'barcode': return main[0] || '';
       case 'newbc': return extra[0] || '';
       case 'status': return chk ? (chk.s === S.MATCH ? 1 : 2) : 0;
+      case 'count': return state.counts[p.r] ? Number(state.counts[p.r].q) : -1;
       default: return p.r;
     }
   }
@@ -970,8 +1210,9 @@
         <td class="mono">${main.length ? esc(main.join(', ')) : '<span class="tag muted">Yok</span>'}</td>
         <td class="mono">${extra.length ? `<span class="tag info">${esc(extra.join(', '))}</span>` : ''}</td>
         <td class="c-status">${chk ? `<span class="tag ${cls}">${esc(chk.s)}</span> <span class="muted small">${fmtDate(chk.t)}</span> ${byTag(chk.by)}` : '<span class="muted small">—</span>'}</td>
+        <td class="c-num">${state.counts[p.r] ? `<b>${fmtQty(state.counts[p.r].q)}</b>` : '<span class="muted small">—</span>'}</td>
       </tr>`;
-    }).join('') : '<tr><td colspan="7" class="empty">Sonuç yok</td></tr>';
+    }).join('') : '<tr><td colspan="8" class="empty">Sonuç yok</td></tr>';
     $('listMore').hidden = true;
   }
 
@@ -1002,7 +1243,7 @@
         <span class="dot ${chk ? (chk.s === S.MATCH ? 'ok' : 'info') : 'none'}"></span>
         <div class="item-main">
           <div class="item-title">${normText(q) ? highlight(p.name, q) : esc(p.name)}</div>
-          <div class="item-sub"><span>${esc(p.brand)}</span><span class="mono">${main.length ? esc(main[0]) : 'Barkodsuz'}</span>${extra.length ? `<span class="tag info">+${extra.length} yeni</span>` : ''}</div>
+          <div class="item-sub"><span>${esc(p.brand)}</span><span class="mono">${main.length ? esc(main[0]) : 'Barkodsuz'}</span>${extra.length ? `<span class="tag info">+${extra.length} yeni</span>` : ''}${state.counts[p.r] ? `<span class="tag ok">Stok: ${fmtQty(state.counts[p.r].q)}</span>` : ''}</div>
         </div>
         <div class="item-side">${tag}</div>
       </li>`;
@@ -1047,10 +1288,10 @@
       html += `<li class="section-title">Tarama geçmişi (${rows.length})</li>`;
       html += rows.slice(0, lim).map((l) => `
         <li class="item" data-code="${esc(l.code)}">
-          <span class="dot ${RESULT_CLASS[l.result] || 'none'}"></span>
+          <span class="dot ${resultClass(l.result)}"></span>
           <div class="item-main"><div class="item-title">${esc(l.name || l.code)}</div>
           <div class="item-sub"><span class="mono">${esc(l.code)}</span><span>${fmtDate(l.t)}</span>${byTag(l.by)}</div></div>
-          <span class="tag ${RESULT_CLASS[l.result] || 'muted'}">${esc(l.result)}</span>
+          <span class="tag ${resultClass(l.result)}">${esc(l.result)}</span>
         </li>`).join('');
       if (!rows.length) html += '<li class="empty">Tarama geçmişi boş.</li>';
       else if (rows.length > lim) html += `<li class="empty">… ve ${rows.length - lim} kayıt daha (Excel çıktısında hepsi var)</li>`;
@@ -1079,6 +1320,7 @@
     renderFileInfo();
     if ($('tab-list').classList.contains('active')) renderList();
     if ($('tab-log').classList.contains('active')) renderLog();
+    renderCount();
   }
 
   // ------------------------------------------------------------------
@@ -1106,6 +1348,7 @@
     const cStat = ensureCol(book.cols.status, COL_STATUS);
     const cDate = ensureCol(book.cols.date, COL_DATE);
     const cBy = ensureCol(book.cols.by, COL_BY);
+    const cCount = ensureCol(book.cols.count, COL_COUNT);
 
     for (const p of book.products) {
       const added = state.added[p.r] || [];
@@ -1119,20 +1362,25 @@
         ws[XLSX.utils.encode_cell({ r: p.r, c: cDate })] = { t: 's', v: fmtDate(chk.t) };
         if (chk.by) ws[XLSX.utils.encode_cell({ r: p.r, c: cBy })] = { t: 's', v: chk.by };
       }
+      const cnt = state.counts[p.r];
+      if (cnt) ws[XLSX.utils.encode_cell({ r: p.r, c: cCount })] = { t: 'n', v: Number(cnt.q) };
     }
     range.e.c = Math.max(range.e.c, lastCol);
     ws['!ref'] = XLSX.utils.encode_range(range);
     const cols = ws['!cols'] || [];
-    [cNew, cStat, cDate, cBy].forEach((c, i) => { if (!cols[c] || !cols[c].wch) cols[c] = { wch: [18, 20, 17, 16][i] }; });
+    [cNew, cStat, cDate, cBy, cCount].forEach((c, i) => { if (!cols[c] || !cols[c].wch) cols[c] = { wch: [18, 20, 17, 16, 12][i] }; });
     ws['!cols'] = cols;
     ws['!autofilter'] = ws['!autofilter'] || { ref: XLSX.utils.encode_range({ s: { r: hr, c: range.s.c }, e: { r: range.e.r, c: range.e.c } }) };
 
     // Yeni Ürünler sayfası
-    const npRows = [['Barkod', 'Ürün Adı', 'Marka', 'Durum', 'Not', 'Tarih', 'Ekleyen']];
-    state.newProducts.forEach((n) => npRows.push([n.barcode, n.name, n.brand, n.status, n.note, fmtDate(n.t), n.by || '']));
+    const npRows = [['Barkod', 'Ürün Adı', 'Marka', 'Durum', 'Not', 'Tarih', 'Ekleyen', COL_COUNT]];
+    state.newProducts.forEach((n) => {
+      const cnt = state.counts['n:' + n.id];
+      npRows.push([n.barcode, n.name, n.brand, n.status, n.note, fmtDate(n.t), n.by || '', cnt ? Number(cnt.q) : '']);
+    });
     const wsNew = XLSX.utils.aoa_to_sheet(npRows);
     for (let i = 1; i < npRows.length; i++) wsNew[XLSX.utils.encode_cell({ r: i, c: 0 })] = codeCell(npRows[i][0]);
-    wsNew['!cols'] = [{ wch: 16 }, { wch: 50 }, { wch: 16 }, { wch: 14 }, { wch: 24 }, { wch: 17 }, { wch: 16 }];
+    wsNew['!cols'] = [{ wch: 16 }, { wch: 50 }, { wch: 16 }, { wch: 14 }, { wch: 24 }, { wch: 17 }, { wch: 16 }, { wch: 12 }];
     putSheet(wb, SHEET_NEW, wsNew);
 
     // Tarama Geçmişi sayfası
@@ -1429,7 +1677,10 @@
     document.querySelectorAll('.tabbtn').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
     if (name === 'list') renderList();
     if (name === 'log') renderLog();
-    if (name === 'scan') { resumeCamera(); focusScan(); } else pauseCamera();
+    moveCamera(name);
+    if (name === 'scan' || (name === 'count' && $('countCard').hidden)) resumeCamera(); else pauseCamera();
+    if (name === 'count') renderCount();
+    focusScan();
     window.scrollTo(0, 0);
   }
 
@@ -1457,11 +1708,15 @@
       if ($('manualInput').value.trim()) $('manualForm').requestSubmit();
     });
     // Bilgisayarda barkod kutusu her zaman hazır: boş bir yere tıklanınca imleç geri döner
-    $('manualInput').addEventListener('blur', () => setTimeout(() => {
-      const a = document.activeElement;
-      if (a && a !== document.body && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
-      focusScan();
-    }, 0));
+    document.addEventListener('focusout', (e) => {
+      if (!/^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
+      setTimeout(() => {
+        const a = document.activeElement;
+        if (a && a !== document.body && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+        focusScan();
+      }, 0);
+    });
+    bindCount();
 
     // Eşleşme yok paneli
     let st = null;
@@ -1665,10 +1920,10 @@
         target.focus();
         return;
       }
-      // Tara ekranında yazılan / okutulan her karakter doğrudan barkod kutusuna gider
-      if (!isTouch() && !sheetMode && e.key.length === 1 && $('tab-scan').classList.contains('active')) {
+      // Tara / Sayım ekranında yazılan / okutulan her karakter doğrudan kutuya gider
+      if (!isTouch() && !sheetMode && e.key.length === 1 && scanInputFor(activeTab())) {
         e.preventDefault();
-        const el = $('manualInput');
+        const el = scanInputFor(activeTab());
         el.focus({ preventScroll: true });
         el.value += e.key;
         return;

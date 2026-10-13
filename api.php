@@ -20,7 +20,6 @@ $EPOCH = $DIR . '/sayim.txt';
 $LOCK = $DIR . '/kilit';
 $PAGE = 1048576;          // bir yanıtta en fazla 1 MB kayıt
 $MAX_BODY = 2097152;      // en fazla 2 MB istek
-$TYPES = array('scan', 'newbc', 'undo_newbc', 'notfound', 'newprod', 'del_newprod');
 
 function cevap($data, $code = 200)
 {
@@ -133,7 +132,7 @@ foreach ($incoming as $ev) {
     if (!is_array($ev) || !isset($ev['id'], $ev['t'], $ev['type'])) continue;
     $id = (string)$ev['id'];
     if (!preg_match('/^[A-Za-z0-9_-]{1,64}$/', $id) || isset($seen[$id])) continue;
-    if (!in_array($ev['type'], $TYPES, true)) continue;
+    if (!is_string($ev['type']) || !preg_match('/^[a-z_]{1,24}$/', $ev['type'])) continue;
     $line = json_encode(array('id' => $id) + $ev, JSON_UNESCAPED_UNICODE);
     if ($line === false || strlen($line) > 8000) continue;
     $seen[$id] = true;

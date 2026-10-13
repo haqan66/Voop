@@ -1,5 +1,5 @@
 // Çevrimdışı çalışma için uygulama dosyalarını önbelleğe alır.
-const CACHE = 'barkod-kontrol-v7';
+const CACHE = 'barkod-kontrol-v8';
 const ASSETS = [
   './',
   'index.html',

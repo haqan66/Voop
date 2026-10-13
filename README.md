@@ -15,6 +15,22 @@ birkaç saniye içinde diğer ekranlara ve Excel çıktısına yansır. Telefond
    barkod o ürünün **Yeni Barkod** sütununa eklenir; ekipteki herkeste hemen eşleşir.
 5. **İsimle de bulunamazsa** – **Bulunamadı** işaretlenir, ürün adı + barkod girilerek **Yeni Ürün** eklenir.
 
+## Stok sayımı
+
+**Sayım** sekmesinde ürün bulunur ve yanına stok adedi yazılır:
+
+1. Barkodu okutun (el okuyucu veya telefon kamerası) ya da ürün adını yazıp Enter’a basın / listeden seçin.
+2. Ürün kartı açılır, imleç **Stok adedi** kutusuna gelir. Adedi yazıp **Enter** (veya Kaydet).
+3. İmleç tekrar barkod kutusuna döner; sıradaki ürünü okutun.
+
+- Ürün daha önce sayıldıysa kayıtlı adet, kimin ve ne zaman saydığı görünür; yeni adet yazılırsa **değiştirilir**.
+- Adet yazmadan başka bir barkod okutulursa o ürüne geçilir; `Esc` / Vazgeç ile kart kapanır.
+- Ondalık adet yazılabilir (ör. `7,5`).
+- *Son sayılanlar* listesinden bir ürüne tıklayarak adedi düzeltebilir, çöp kutusu ile sayımı silebilirsiniz.
+- Sayımlar ekipteki herkese anında yansır; *Ürünler* tablosunda **Stok Adedi** sütunu da vardır.
+- Excel çıktısında ana listeye **Stok Adedi** sütunu eklenir ve sayılan adet yazılır
+  (*Yeni Ürünler* sayfasındaki ürünler sayıldıysa orada da **Stok Adedi** sütunu bulunur).
+
 ## Hostinge yükleme
 
 Gereken: **PHP** destekli bir hosting (cPanel / Plesk vb. paylaşımlı hostinglerin hepsinde vardır) ve **SSL (https)**.
@@ -49,8 +65,8 @@ yazma izni verin (cPanel → izinler → 755).
 
 | Sayfa | İçerik |
 |---|---|
-| Ürün Stok Kartı Ana Dosya | Sabit liste + **Yeni Barkod**, **Kontrol Durumu**, **Kontrol Tarihi**, **Kontrol Eden** |
-| Yeni Ürünler | Barkod, Ürün Adı, Marka, Durum (*Yeni Ürün* / *Bulunamadı*), Not, Tarih, Ekleyen |
+| Ürün Stok Kartı Ana Dosya | Sabit liste + **Yeni Barkod**, **Kontrol Durumu**, **Kontrol Tarihi**, **Kontrol Eden**, **Stok Adedi** |
+| Yeni Ürünler | Barkod, Ürün Adı, Marka, Durum (*Yeni Ürün* / *Bulunamadı*), Not, Tarih, Ekleyen, Stok Adedi |
 | Tarama Geçmişi | Her işlemin tarihi, barkodu, sonucu, ürün adı ve okutan kişi |
 
 Yanlış eklenen barkod veya ürün *Kayıtlar* sekmesinden çöp kutusu ile geri alınabilir (ekipte herkes için geri alınır).
