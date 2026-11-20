@@ -178,14 +178,31 @@
       <ul id="logList" class="list"></ul>
       </div>
 
-      <div class="card file-card" id="teamCard">
+      </div>
+    </section>
+    <!-- ============ AYARLAR ============ -->
+    <section id="tab-settings" class="tab">
+      <div class="settings-grid">
+      <div class="card" id="listCard">
+        <h2 class="card-title">Ürün Listesi (Excel)</h2>
+        <p class="small" id="listInfo"></p>
+        <label class="btn btn-primary btn-block">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3m0 0L7.5 7.5M12 3l4.5 4.5M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+          Excel Yükle
+          <input id="listFile" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" hidden>
+        </label>
+        <p class="muted small">Kendi Excel’inizi seçin veya bu kutuya sürükleyip bırakın. Ürünlerin olduğu sayfada <b>Barkod</b> ve <b>Ürün Adı</b> başlıkları olmalı.
+          Yapılmış kontrol ve sayımlar <b>Satıcı Stok Kodu</b>’na göre eşleşir; ürün sırası değişebilir, ürün eklenip çıkarılabilir.
+          Sunucuya bağlıyken liste ekipteki herkese otomatik gider.</p>
+        <button id="listReset" class="btn btn-ghost btn-block" hidden>Varsayılan listeye dön</button>
+      </div>
+      <div class="card" id="teamCard">
         <h2 class="card-title">Ortak Çalışma</h2>
         <p class="small" id="syncDetail"></p>
         <label class="field">
           <span>Adınız <em class="muted">(okutmalarda görünür)</em></span>
           <input id="userName" type="text" autocomplete="name" maxlength="40" placeholder="Örn. Ahmet">
         </label>
-        <p class="muted small" id="fileDetail"></p>
         <button id="btnReset" class="btn btn-danger-ghost btn-block">Kayıtları Sıfırla</button>
       </div>
       </div>
@@ -208,6 +225,10 @@
     <button class="tabbtn" data-tab="log">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6Zm0 0v6h6M8 13h8M8 17h5"/></svg>
       <span>Kayıtlar</span>
+    </button>
+    <button class="tabbtn" data-tab="settings">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>
+      <span>Ayarlar</span>
     </button>
   </nav>
 

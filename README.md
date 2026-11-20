@@ -6,7 +6,7 @@ birkaç saniye içinde diğer ekranlara ve Excel çıktısına yansır. Telefond
 
 ## Nasıl çalışır?
 
-1. **Ürün listesi sabittir** – `data/urun-listesi.xlsx` sitenin içindedir.
+1. **Ürün listesi** – sitedeki `data/urun-listesi.xlsx` kullanılır; kendi Excel’inizi *Ayarlar → Excel Yükle* ile yükleyebilirsiniz.
 2. **Adınızı yazın** – siteye ilk girişte bir kez sorulur; okuttuğunuz her üründe bu isim görünür.
 3. **Barkod okutun** – telefon kamerası, bilgisayar kamerası, USB / el barkod okuyucu veya elle giriş.
    - Listede varsa: yeşil **EŞLEŞİYOR ✓**, ürün adı, bip sesi ve titreşim.
@@ -55,7 +55,7 @@ yazma izni verin (cPanel → izinler → 755).
 - Bir kişinin eklediği yeni barkod diğerlerinde de hemen eşleşir; aynı barkodu iki kişi aynı anda “Bulunamadı”
   işaretlese de tek kayıt oluşur.
 - **Excel İndir** herhangi bir cihazdan yapılabilir; ekibin tüm kayıtlarını içerir.
-- **Yeni sayım:** *Kayıtlar → Yeni Sayım Başlat*. Herkesin kayıtları temizlenir, tüm cihazlar sıfırlanır;
+- **Yeni sayım:** *Ayarlar → Yeni Sayım Başlat*. Herkesin kayıtları temizlenir, tüm cihazlar sıfırlanır;
   eski kayıtlar sunucuda `veri/arsiv/` klasörüne yedeklenir.
 - Site linkini bilen herkes okutma yapabilir; linki yalnızca ekiple paylaşın.
 
@@ -83,15 +83,21 @@ Geniş ekranda masaüstü düzeni açılır: sol menü, iki sütunlu tarama ekra
 
 `index.html` dosyasına çift tıklayarak da açılabilir; bu durumda sunucu olmadığı için tek cihaz olarak çalışır.
 
-## Ürün listesini güncellemek
+## Ürün listesini güncellemek (Ayarlar)
 
-`data/urun-listesi.xlsx` dosyasını yenisiyle değiştirin ve gömülü kopyayı yeniden üretin:
+*Ayarlar → Excel Yükle* ile kendi Excel’inizi seçin (veya kutuya sürükleyip bırakın). Program dosyayı okur, kaç ürün
+olduğunu ve mevcut listeye göre kaç ürünün eklendiğini / çıkarıldığını gösterir; onaylayınca yeni liste kullanılır.
 
-```
-python3 -c "import base64;d=base64.b64encode(open('data/urun-listesi.xlsx','rb').read()).decode();open('data/urun-listesi.js','w').write(\"window.DEFAULT_XLSX_B64 = '\"+d+\"';\n\")"
-```
+- **Hostingde:** liste sunucuya kaydedilir (`veri/urun-listesi.xlsx`) ve ekipteki herkese birkaç saniye içinde
+  kendiliğinden gelir.
+- **Çift tıklayarak açtığınızda:** liste o bilgisayarın tarayıcısına kaydedilir.
+- Yapılmış kontrol, yeni barkod ve sayımlar ürünlere **Satıcı Stok Kodu** ile bağlıdır: liste sıralansa, araya ürün
+  eklense ya da ürün çıkarılsa da kayıtlar doğru ürünlerde kalır. (Stok kodu boş / tekrarlı ürünler barkoduyla eşleşir.)
+- Listeden çıkarılan bir ürünün kayıtları Excel çıktısında görünmez; ürün tekrar eklenirse geri gelir.
+- *Varsayılan listeye dön* yüklenen listeyi kaldırır.
+- Excel çıktısı, kullanılan listenin kendi düzeniyle (sütunlarıyla) oluşturulur.
 
-Kayıtlar listedeki satır sırasına göre tutulduğundan listeyi yeni bir sayımın başında güncelleyin.
+Sayfada **Barkod** ve **Ürün Adı** başlıkları olması yeterlidir.
 
 ## Dosyalar
 
@@ -101,7 +107,7 @@ app.css                  mobil + masaüstü tasarım
 app.js                   okuma, eşleştirme, arama, ortak çalışma, Excel yazma
 api.php                  ortak kayıt sunucusu (PHP, veritabanı gerekmez)
 sw.js                    çevrimdışı çalışma
-data/urun-listesi.xlsx   sabit ürün listesi
+data/urun-listesi.xlsx   varsayılan ürün listesi
 data/urun-listesi.js     aynı listenin gömülü kopyası (çift tıklayarak açmak için)
 vendor/                  SheetJS (Excel) ve html5-qrcode (barkod okuma) kütüphaneleri
 veri/                    (sunucuda otomatik oluşur) ortak kayıtlar ve arşiv

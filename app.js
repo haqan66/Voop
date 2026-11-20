@@ -175,19 +175,30 @@
       switch (ev.type) {
         case 'scan':
           log(ev.res);
-          if (ev.res === S.MATCH) (ev.rows || []).forEach((r) => { st.checked[r] = { s: ev.via === 'new' ? S.NEWBC : S.MATCH, t: ev.t, by }; });
+          if (ev.res === S.MATCH) evRows(ev).forEach((r) => { st.checked[r] = { s: ev.via === 'new' ? S.NEWBC : S.MATCH, t: ev.t, by }; });
           break;
-        case 'newbc':
-          st.added[ev.r] = uniq([...(st.added[ev.r] || []), ev.code]);
-          st.checked[ev.r] = { s: S.NEWBC, t: ev.t, by };
+        case 'newbc': {
+          const r = evRows(ev)[0];
+          if (r !== undefined) {
+            st.added[r] = uniq([...(st.added[r] || []), ev.code]);
+            st.checked[r] = { s: S.NEWBC, t: ev.t, by };
+          }
           log(S.NEWBC);
           break;
+        }
         case 'undo_newbc': {
-          const left = (st.added[ev.r] || []).filter((c) => c !== ev.code);
-          if (left.length) st.added[ev.r] = left;
-          else {
-            delete st.added[ev.r];
-            if (st.checked[ev.r] && st.checked[ev.r].s === S.NEWBC) delete st.checked[ev.r];
+          let r = evRows(ev)[0];
+          if (r === undefined) { // eski kayıt: barkodu taşıyan ürünü bul
+            const hit = Object.entries(st.added).find(([, codes]) => codes.includes(ev.code));
+            r = hit ? +hit[0] : undefined;
+          }
+          if (r !== undefined) {
+            const left = (st.added[r] || []).filter((c) => c !== ev.code);
+            if (left.length) st.added[r] = left;
+            else {
+              delete st.added[r];
+              if (st.checked[r] && st.checked[r].s === S.NEWBC) delete st.checked[r];
+            }
           }
           log(S.UNDO);
           break;
@@ -212,14 +223,16 @@
         }
         case 'count': {
           const key = countKey(ev);
-          st.counts[key] = { q: ev.qty, t: ev.t, by };
+          if (key !== null) st.counts[key] = { q: ev.qty, t: ev.t, by };
           log(`Sayım: ${fmtQty(ev.qty)}`);
           break;
         }
-        case 'count_del':
-          delete st.counts[countKey(ev)];
+        case 'count_del': {
+          const key = countKey(ev);
+          if (key !== null) delete st.counts[key];
           log('Sayım silindi');
           break;
+        }
         default: break;
       }
     }
@@ -230,7 +243,28 @@
     state = st;
   }
 
-  function countKey(ev) { return ev.r !== undefined && ev.r !== null ? String(ev.r) : 'n:' + ev.pid; }
+  function rowByKey(k) {
+    const p = book && book.byKey.get(String(k));
+    return p ? p.r : null;
+  }
+
+  /** Olayın ilgili olduğu ürünlerin bu listedeki satırları. Yeni olaylar ürün anahtarı (pk) taşır;
+   *  önceki sürümün olayları (satır numarasıyla) stok kodu veya barkoddan eşleştirilir. */
+  function evRows(ev) {
+    if (!book) return [];
+    if (ev.pks) return ev.pks.map(rowByKey).filter((r) => r !== null);
+    if (ev.pk) { const r = rowByKey(ev.pk); return r === null ? [] : [r]; }
+    if (ev.pid) return [];
+    if (ev.stok) { const r = rowByKey('k:' + String(ev.stok).trim()); if (r !== null) return [r]; }
+    if (ev.code && (ev.type === 'scan' || ev.type === 'count_del')) return (book.byCode.get(codeKey(ev.code)) || []).slice(0, ev.type === 'scan' ? 9 : 1);
+    return [];
+  }
+
+  function countKey(ev) {
+    if (ev.pid && !ev.pk) return 'n:' + ev.pid;
+    const rows = evRows(ev);
+    return rows.length ? String(rows[0]) : null;
+  }
   function fmtQty(q) { return Number(q).toLocaleString('tr-TR', { maximumFractionDigits: 3 }); }
 
   function persist() {
@@ -357,7 +391,20 @@
 
     const brands = uniq(products.map((p) => p.brand).filter(Boolean)).sort((a, b) => a.localeCompare(b, 'tr'));
     products.forEach((p) => { p.hay = normText([p.name, p.brand, p.code, p.other, p.cat].join(' ')); p.nName = normText(p.name); });
-    return { sheetName, headerRow: h, header, cols, products, byRow: new Map(products.map((p) => [p.r, p])), brands, newProducts, log };
+
+    // Kayıtlar ürüne Satıcı Stok Kodu ile bağlanır: liste sıralansa / ürün eklenip çıkarılsa da doğru ürüne düşer.
+    // Stok kodu boş ya da tekrarlıysa barkod (o da yoksa satır) kullanılır.
+    const codeCount = new Map();
+    products.forEach((p) => { if (p.code) codeCount.set(p.code, (codeCount.get(p.code) || 0) + 1); });
+    let weakKeys = 0;
+    products.forEach((p) => {
+      if (p.code && codeCount.get(p.code) === 1) p.key = 'k:' + p.code;
+      else { weakKeys++; p.key = p.codes[0] ? 'b:' + codeKey(p.codes[0]) + ':' + p.r : 'r:' + p.r; }
+    });
+    const byKey = new Map(products.map((p) => [p.key, p]));
+    const byCode = new Map(); // ana barkod → satırlar (eski kayıtları eşleştirmek için)
+    products.forEach((p) => p.codes.forEach((c) => { const k = codeKey(c); byCode.set(k, (byCode.get(k) || []).concat(p.r)); }));
+    return { sheetName, headerRow: h, header, cols, products, byRow: new Map(products.map((p) => [p.r, p])), byKey, byCode, weakKeys, brands, newProducts, log };
   }
 
   // ------------------------------------------------------------------
@@ -645,7 +692,7 @@
         const p = book.byRow.get(first.ref);
         const viaNew = hits.every((h) => h.via === 'new');
         const rows = hits.filter((h) => h.kind === 'p').map((h) => h.ref);
-        commit({ type: 'scan', code, res: S.MATCH, rows, via: viaNew ? 'new' : 'main', name: p.name, stok: p.code, brand: p.brand });
+        commit({ type: 'scan', code, res: S.MATCH, rows, pks: rows.map((r) => book.byRow.get(r).key), via: viaNew ? 'new' : 'main', name: p.name, stok: p.code, brand: p.brand });
         const extra = hits.length > 1 ? `<div class="small">⚠ Bu barkod listede ${hits.length} üründe kayıtlı</div>` : '';
         showResult('ok', 'EŞLEŞİYOR ✓', p.name,
           `${esc(code)} · Stok: ${esc(p.code)}${p.brand ? ' · ' + esc(p.brand) : ''}${viaNew ? ' · <b>Yeni Barkod ile</b>' : ''}${extra}`);
@@ -788,7 +835,7 @@
       'Ekle').then((ok) => {
       if (!ok) return;
       // (daha önce "bulunamadı" işaretlendiyse o kayıt otomatik düşer)
-      commit({ type: 'newbc', r, code, name: p.name, stok: p.code, brand: p.brand });
+      commit({ type: 'newbc', r, pk: p.key, code, name: p.name, stok: p.code, brand: p.brand });
       showResult('ok', 'YENİ BARKOD EKLENDİ ✓', p.name, `${esc(code)} → Yeni Barkod sütununa yazıldı`);
       beep('ok');
       toast('Yeni barkod eklendi');
@@ -1019,7 +1066,7 @@
     if (!info) { closeCountCard(); return; }
     const qty = Number(v);
     commit(Object.assign({ type: 'count', qty, code: info.code, name: info.name, stok: info.stok, brand: info.brand },
-      countTarget.kind === 'p' ? { r: countTarget.r } : { pid: countTarget.pid }));
+      countTarget.kind === 'p' ? { r: countTarget.r, pk: book.byRow.get(countTarget.r).key } : { pid: countTarget.pid }));
     countMessage('ok', `✓ <b>${esc(info.name)}</b> — stok adedi <b>${fmtQty(qty)}</b> kaydedildi`);
     beep('ok');
     closeCountCard();
@@ -1085,7 +1132,7 @@
         const c = state.counts[key];
         if (!info || !c) return;
         if (!(await confirmBox('Sayım silinsin mi?', `<p><b>${esc(info.name)}</b></p><p>Stok adedi: <b>${fmtQty(c.q)}</b></p>`, 'Sil', true))) return;
-        commit(Object.assign({ type: 'count_del', code: info.code, name: info.name }, key.startsWith('n:') ? { pid: key.slice(2) } : { r: +key }));
+        commit(Object.assign({ type: 'count_del', code: info.code, name: info.name, stok: info.stok }, key.startsWith('n:') ? { pid: key.slice(2) } : { r: +key, pk: book.byRow.get(+key).key }));
         toast('Sayım silindi');
         return;
       }
@@ -1307,10 +1354,8 @@
 
   function renderFileInfo() {
     if (!book) return;
-    const withBc = book.products.filter((p) => p.codes.length).length;
     const c = counts();
     $('fileInfo').textContent = `${book.products.length} ürün · ${c.checked} kontrol edildi${userName() ? ' · ' + userName() : ''}`;
-    $('fileDetail').innerHTML = `Ürün listesi <b>sabit</b>: ${book.products.length} ürün · ${withBc} barkodlu (${esc(book.sheetName)})`;
     $('brandList').innerHTML = book.brands.map((b) => `<option value="${esc(b)}">`).join('');
   }
 
@@ -1451,9 +1496,123 @@
   // ------------------------------------------------------------------
   // Ürün listesi (sabit) ve sıfırlama
   // ------------------------------------------------------------------
-  function loadBook(buf) {
-    book = parseWorkbook(buf);
+  // Kullanılan ürün listesi: varsayılan (sitedeki data/urun-listesi.xlsx), sunucuya yüklenen (ekibin ortak listesi)
+  // ya da bu cihaza yüklenen (sunucu yokken).
+  const LIST_DEFAULT = { source: 'default', version: '', name: 'urun-listesi.xlsx', by: '', t: '' };
+  let listMeta = Object.assign({}, LIST_DEFAULT);
+  let listFetching = false;
+
+  /** Yeni ürün listesini devreye alır; kayıtlar stok koduna göre yeniden eşleşir. */
+  function applyList(buf, metaInfo, save = true) {
+    const parsed = parseWorkbook(buf); // geçersizse hata fırlatır, mevcut liste korunur
+    book = parsed;
     fileBuf = buf;
+    listMeta = Object.assign({}, LIST_DEFAULT, metaInfo);
+    if (save) {
+      if (listMeta.source === 'default') { DB.del('listFile'); DB.del('listMeta'); }
+      else { DB.set('listFile', buf); DB.set('listMeta', listMeta); }
+    }
+    if (countTarget) closeCountCard();
+    if (sheetMode === 'detail') closeSheet(false);
+    replay();
+    rebuildIndex();
+    renderAfterChange();
+    renderDirty();
+    renderSettings();
+    if (activeTab() === 'list') renderList();
+  }
+
+  function toBase64(buf) {
+    const u8 = new Uint8Array(buf);
+    let bin = '';
+    for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+    return btoa(bin);
+  }
+
+  /** Ayarlar → Excel Yükle */
+  async function onListFile(file) {
+    if (!file) return;
+    if (!/\.(xlsx|xls)$/i.test(file.name)) { toast('Lütfen bir Excel dosyası (.xlsx) seçin'); return; }
+    let buf, parsed;
+    try {
+      buf = await file.arrayBuffer();
+      parsed = parseWorkbook(buf);
+    } catch (e) {
+      await confirmBox('Excel okunamadı', `<p>${esc(e.message)}</p><p class="small muted">Ürünlerin olduğu sayfada “Barkod” ve “Ürün Adı” başlıkları olmalı.</p>`, 'Tamam');
+      return;
+    }
+    const oldKeys = new Set(book ? book.products.map((p) => p.key) : []);
+    const newKeys = new Set(parsed.products.map((p) => p.key));
+    const added = [...newKeys].filter((k) => !oldKeys.has(k)).length;
+    const removed = [...oldKeys].filter((k) => !newKeys.has(k)).length;
+    const withBc = parsed.products.filter((p) => p.codes.length).length;
+    const ok = await confirmBox('Ürün listesi güncellensin mi?',
+      `<p><b>${esc(file.name)}</b><br>${parsed.products.length} ürün okundu (${withBc} barkodlu) · sayfa: ${esc(parsed.sheetName)}</p>
+       <p>Mevcut listeye göre <b>${added}</b> yeni, <b>${removed}</b> çıkarılan ürün.</p>
+       <p class="small muted">Yapılmış kontrol ve sayımlar Satıcı Stok Kodu’na göre ilgili ürünlerde kalır.${Sync.url ? ' Liste ekipteki herkese gönderilir.' : ''}</p>
+       ${parsed.weakKeys ? `<p class="small" style="color:var(--warn)">⚠ ${parsed.weakKeys} üründe Satıcı Stok Kodu boş veya tekrarlı; bu ürünler barkoduyla eşleştirilir.</p>` : ''}`,
+      'Yükle');
+    if (!ok) return;
+    if (Sync.url) {
+      try {
+        const j = await Sync.call('POST', { action: 'list', name: file.name, by: userName(), data: toBase64(buf) });
+        if (!j.ok) throw new Error(j.error || 'Sunucu hatası');
+        applyList(buf, Object.assign({ source: 'server' }, j.list));
+      } catch (e) { toast('Liste yüklenemedi: ' + e.message); return; }
+    } else {
+      applyList(buf, { source: 'local', name: file.name, by: userName(), t: nowIso(), version: 'local-' + rid() });
+    }
+    toast(`Ürün listesi güncellendi: ${book.products.length} ürün`);
+  }
+
+  async function resetList() {
+    const ok = await confirmBox('Varsayılan listeye dönülsün mü?',
+      `<p>Yüklenen liste kaldırılır, sitedeki varsayılan ürün listesi kullanılır.${Sync.url ? ' Ekipteki herkes için geçerlidir.' : ''}</p>`, 'Varsayılana dön', true);
+    if (!ok) return;
+    try {
+      if (Sync.url) {
+        const j = await Sync.call('POST', { action: 'list_reset' });
+        if (!j.ok) throw new Error(j.error || 'Sunucu hatası');
+      }
+      applyList(await defaultFile(), LIST_DEFAULT);
+      toast('Varsayılan ürün listesine dönüldü');
+    } catch (e) { toast('Olmadı: ' + e.message); }
+  }
+
+  /** Sunucudaki ortak liste değiştiyse indirip devreye alır. */
+  async function syncList(remote) {
+    const rv = (remote && remote.version) || '';
+    const lv = listMeta.source === 'server' ? listMeta.version : '';
+    if (rv === lv || listFetching) return;
+    if (!rv) {
+      if (listMeta.source !== 'server') return; // sunucuda liste yok: bu cihazdaki liste kalır
+      applyList(await defaultFile(), LIST_DEFAULT);
+      toast('Ürün listesi varsayılana döndü');
+      return;
+    }
+    listFetching = true;
+    try {
+      const u = new URL(Sync.url);
+      u.searchParams.set('liste', '1');
+      u.searchParams.set('v', rv);
+      const res = await fetch(u, { cache: 'no-store' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      applyList(await res.arrayBuffer(), Object.assign({ source: 'server' }, remote));
+      toast(`Ürün listesi güncellendi${remote.by ? ' (' + remote.by + ')' : ''}: ${book.products.length} ürün`);
+    } catch (e) {
+      console.warn('Ürün listesi alınamadı', e);
+    } finally { listFetching = false; }
+  }
+
+  function renderSettings() {
+    if (!book) return;
+    const withBc = book.products.filter((p) => p.codes.length).length;
+    const src = listMeta.source === 'server' ? 'Ekibin ortak listesi (sunucuya yüklendi)'
+      : listMeta.source === 'local' ? 'Bu cihaza yüklendi' : 'Varsayılan liste';
+    $('listInfo').innerHTML = `<b>${esc(listMeta.name || 'urun-listesi.xlsx')}</b><br>
+      ${book.products.length} ürün · ${withBc} barkodlu · sayfa: ${esc(book.sheetName)}<br>
+      <span class="muted">${src}${listMeta.by ? ' · ' + esc(listMeta.by) : ''}${listMeta.t ? ' · ' + fmtDate(listMeta.t) : ''}</span>`;
+    $('listReset').hidden = listMeta.source === 'default';
   }
 
   async function resetAll() {
@@ -1563,8 +1722,10 @@
           else { ids.forEach((id) => outbox.delete(id)); persist(); }
         }
         // 2) ekibin yeni kayıtlarını al
+        let last = null;
         for (let guard = 0; guard < 50; guard++) {
           const j = await this.call('GET', null, { since: meta.cursor });
+          last = j;
           if (!j.ok) throw new Error(j.error || 'Sunucu hatası');
           if (meta.epoch && j.epoch !== meta.epoch) { await newEpoch(j.epoch); continue; }
           meta.epoch = j.epoch;
@@ -1574,6 +1735,7 @@
           persist();
           if (!j.more) break;
         }
+        if (last && 'list' in last) await syncList(last.list);
         this.status = 'ok';
         this.error = '';
         this.lastOk = Date.now();
@@ -1680,6 +1842,7 @@
     moveCamera(name);
     if (name === 'scan' || (name === 'count' && $('countCard').hidden)) resumeCamera(); else pauseCamera();
     if (name === 'count') renderCount();
+    if (name === 'settings') renderSettings();
     focusScan();
     window.scrollTo(0, 0);
   }
@@ -1785,7 +1948,7 @@
         const [r, code] = undo.dataset.undoBc.split('|');
         const p = book.byRow.get(+r);
         if (!(await confirmBox('Yeni barkod geri alınsın mı?', `<p><b>${esc(p ? p.name : '')}</b></p><p class="mono">${esc(code)}</p>`, 'Geri al', true))) return;
-        commit({ type: 'undo_newbc', r: +r, code, name: p ? p.name : '' });
+        commit({ type: 'undo_newbc', r: +r, pk: p ? p.key : undefined, code, name: p ? p.name : '', stok: p ? p.code : '' });
         toast('Geri alındı');
         return;
       }
@@ -1809,7 +1972,16 @@
     bindKeyboard();
     $('btnReset').addEventListener('click', resetAll);
     $('welcomeForm').addEventListener('submit', onWelcome);
-    $('syncPill').addEventListener('click', () => switchTab('log'));
+    $('listFile').addEventListener('change', (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ''; onListFile(f); });
+    $('listReset').addEventListener('click', resetList);
+    const lc = $('listCard');
+    ['dragenter', 'dragover'].forEach((t) => lc.addEventListener(t, (e) => { e.preventDefault(); lc.classList.add('drop'); }));
+    ['dragleave', 'drop'].forEach((t) => lc.addEventListener(t, () => lc.classList.remove('drop')));
+    lc.addEventListener('drop', (e) => { e.preventDefault(); const f = e.dataTransfer.files && e.dataTransfer.files[0]; onListFile(f); });
+    // sayfanın başka yerine bırakılan dosya tarayıcıda açılmasın
+    window.addEventListener('dragover', (e) => e.preventDefault());
+    window.addEventListener('drop', (e) => e.preventDefault());
+    $('syncPill').addEventListener('click', () => switchTab('settings'));
     $('userName').addEventListener('change', (e) => {
       const v = e.target.value.trim();
       if (!v || /^[\d\s-]{4,}$/.test(v)) { e.target.value = userName(); return; }
@@ -1877,7 +2049,11 @@
       if (old) { DB.del('state'); DB.del('file'); }
     } catch (e) { console.warn('Kayıtlar okunamadı', e); }
     try {
-      loadBook(await defaultFile());
+      const [lf, lm] = await Promise.all([DB.get('listFile'), DB.get('listMeta')]);
+      if (lf && lm) {
+        try { applyList(lf, lm, false); } catch (e) { console.warn('Kayıtlı liste açılamadı', e); }
+      }
+      if (!book) applyList(await defaultFile(), LIST_DEFAULT, false);
     } catch (e) {
       console.error(e);
       $('fileInfo').textContent = 'Ürün listesi yüklenemedi';

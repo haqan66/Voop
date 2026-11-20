@@ -8,6 +8,9 @@
  *   GET  api.php?since=<konum>            → yeni kayıtları döndürür
  *   POST api.php  {"epoch":..,"events":[..]} → yeni kayıtları ekler
  *   POST api.php  {"action":"reset"}       → yeni sayım: mevcut kayıtlar veri/arsiv klasörüne taşınır
+ *   POST api.php  {"action":"list","name":..,"by":..,"data":"<base64>"} → ürün listesini (Excel) yükler
+ *   POST api.php  {"action":"list_reset"}  → yüklenen listeyi kaldırır (sitedeki varsayılan liste kullanılır)
+ *   GET  api.php?liste=1                   → yüklenen ürün listesini (Excel) indirir
  */
 
 header('Content-Type: application/json; charset=utf-8');
@@ -18,8 +21,11 @@ $DIR = __DIR__ . '/veri';
 $LOG = $DIR . '/olaylar.jsonl';
 $EPOCH = $DIR . '/sayim.txt';
 $LOCK = $DIR . '/kilit';
+$LIST = $DIR . '/urun-listesi.xlsx';
+$LIST_META = $DIR . '/liste.json';
 $PAGE = 1048576;          // bir yanıtta en fazla 1 MB kayıt
-$MAX_BODY = 2097152;      // en fazla 2 MB istek
+$MAX_BODY = 2097152;      // kayıt gönderiminde en fazla 2 MB
+$MAX_LIST = 6291456;      // ürün listesi (Excel) en fazla 6 MB
 
 function cevap($data, $code = 200)
 {
@@ -50,10 +56,40 @@ function sayim_no($file)
     return trim($e);
 }
 
+function liste_bilgi($file)
+{
+    $j = @file_get_contents($file);
+    if ($j === false) return null;
+    $d = json_decode($j, true);
+    return is_array($d) ? $d : null;
+}
+
+function kisa($s, $n)
+{
+    $s = preg_replace('/[\x00-\x1F\x7F]/u', '', (string)$s);
+    if ($s === null) return '';
+    return function_exists('mb_substr') ? mb_substr($s, 0, $n, 'UTF-8') : substr($s, 0, $n);
+}
+
 $lock = fopen($LOCK, 'c');
 if (!$lock) cevap(array('ok' => false, 'error' => 'kilit dosyası açılamadı'), 500);
 
 // ---------------------------------------------------------------- okuma
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['liste'])) {
+    flock($lock, LOCK_SH);
+    if (!is_file($LIST)) {
+        flock($lock, LOCK_UN);
+        cevap(array('ok' => false, 'error' => 'yüklenmiş liste yok'), 404);
+    }
+    $bin = file_get_contents($LIST);
+    flock($lock, LOCK_UN);
+    header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    header('Content-Disposition: attachment; filename="urun-listesi.xlsx"');
+    header('Content-Length: ' . strlen($bin));
+    echo $bin;
+    exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     flock($lock, LOCK_SH);
     $epoch = sayim_no($EPOCH);
@@ -74,8 +110,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             if ($line !== '') $lines[] = $line; // satırlar yazılırken doğrulanmış JSON
         }
     }
+    $list = liste_bilgi($LIST_META);
     flock($lock, LOCK_UN);
     echo '{"ok":true,"epoch":' . json_encode($epoch) . ',"next":' . $next . ',"more":' . ($next < $size ? 'true' : 'false')
+        . ',"list":' . json_encode($list, JSON_UNESCAPED_UNICODE)
         . ',"events":[' . implode(',', $lines) . ']}';
     exit;
 }
@@ -83,16 +121,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') cevap(array('ok' => false, 'error' => 'yöntem desteklenmiyor'), 405);
 
 // ---------------------------------------------------------------- yazma
-$raw = file_get_contents('php://input', false, null, 0, $MAX_BODY + 1);
-if (strlen($raw) > $MAX_BODY) cevap(array('ok' => false, 'error' => 'istek çok büyük'), 413);
+$limit = (int)ceil($MAX_LIST * 4 / 3) + 4096;
+$raw = file_get_contents('php://input', false, null, 0, $limit + 1);
+if (strlen($raw) > $limit) cevap(array('ok' => false, 'error' => 'dosya çok büyük (en fazla 6 MB)'), 413);
 $body = json_decode($raw, true);
 if (!is_array($body)) cevap(array('ok' => false, 'error' => 'bad_json'), 400);
+$action = isset($body['action']) ? (string)$body['action'] : '';
+if ($action !== 'list' && strlen($raw) > $MAX_BODY) cevap(array('ok' => false, 'error' => 'istek çok büyük'), 413);
 
 flock($lock, LOCK_EX);
 $epoch = sayim_no($EPOCH);
 
+// Ürün listesi (Excel) yükleme: herkes bu listeyi kullanır
+if ($action === 'list') {
+    $bin = base64_decode(isset($body['data']) ? (string)$body['data'] : '', true);
+    $ok = $bin !== false && strlen($bin) > 100 && strlen($bin) <= $MAX_LIST
+        && (substr($bin, 0, 4) === "PK\x03\x04" || substr($bin, 0, 8) === "\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1");
+    if (!$ok) {
+        flock($lock, LOCK_UN);
+        cevap(array('ok' => false, 'error' => 'geçerli bir Excel dosyası değil'), 400);
+    }
+    file_put_contents($LIST . '.tmp', $bin);
+    rename($LIST . '.tmp', $LIST);
+    $meta = array(
+        'version' => bin2hex(random_bytes(6)),
+        'name' => kisa(basename(isset($body['name']) ? (string)$body['name'] : 'urun-listesi.xlsx'), 120),
+        'by' => kisa(isset($body['by']) ? $body['by'] : '', 60),
+        't' => date('c'),
+        'size' => strlen($bin),
+    );
+    file_put_contents($LIST_META, json_encode($meta, JSON_UNESCAPED_UNICODE));
+    flock($lock, LOCK_UN);
+    cevap(array('ok' => true, 'list' => $meta));
+}
+
+if ($action === 'list_reset') {
+    @unlink($LIST);
+    @unlink($LIST_META);
+    flock($lock, LOCK_UN);
+    cevap(array('ok' => true, 'list' => null));
+}
+
 // Yeni sayım: mevcut kayıtlar arşive taşınır, tüm cihazlar sıfırlanır
-if (isset($body['action']) && $body['action'] === 'reset') {
+if ($action === 'reset') {
     clearstatcache();
     if (file_exists($LOG) && filesize($LOG) > 0) {
         if (!is_dir($DIR . '/arsiv')) @mkdir($DIR . '/arsiv', 0775, true);
